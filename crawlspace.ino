@@ -69,23 +69,26 @@ const int led = LED_BUILTIN;
 
 
 // How often to show serial stats by default (in ms)
-#define statusFreq 5000
+#define statusFreq 60000
 
-// TODO: print stats based on volume of water flow
-//       e.g. print every 0.25l
+// Print stats based on volume of water flow
+// At 450 pulses per liter, a value of 45 means print every 0.1 l
+#define flowFreq 45
 
 
 // vars changed by interrupt need to be marked "volatile" so 
 // as to not be optimized out by the compiler
 volatile unsigned long pulses = 0;
 
-volatile int      doorState;
-volatile int      doorChanged = 0;
+volatile int doorState;
+volatile int doorChanged = 0;
+
+volatile int printNow = 0;
 
 
-volatile unsigned int lastSerial = 0;
 
-
+// Timer to print serial output regardless of activity
+unsigned long lastSerial = 0;
 
 
 
@@ -94,15 +97,18 @@ volatile unsigned int lastSerial = 0;
 void ICACHE_RAM_ATTR flowHandler()
 {
 	pulses++;
+	if (pulses % flowFreq == 0) { printNow = 1; }
+	
 }
 
 
 // Interrupt called on changing signal = note sensor changed
+// TODO: debounce input
 void ICACHE_RAM_ATTR doorHandler()
 {
 	doorState = digitalRead(DOORSENSORPIN);
 	doorChanged = 1;
-	lastSerial=0;   // flag for immediate output
+	printNow = 1;
 }
 
 
@@ -134,7 +140,6 @@ void setup() {
 	// Set interrupt for any signal change for door sensor
 	attachInterrupt(DOORSENSORPIN, doorHandler, CHANGE);
 
-
 }
 
 
@@ -144,10 +149,10 @@ void setup() {
 void loop()
 {
 
-
-	// Print serial status every N milliseconds
-	if (millis() - lastSerial > statusFreq) {
+	// Print serial status when prompted, or every N milliseconds
+	if (printNow || millis() - lastSerial > statusFreq) {
 		lastSerial=millis();
+		printNow = 0;
 		
 		Serial.println();
 		Serial.println(millis());
