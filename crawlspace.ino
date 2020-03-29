@@ -2,16 +2,9 @@
   
   Arduino sketch to drive the ESP8266 in our the crawlspace
 
-
-Refs:
-* https://github.com/bram2202/mqtt-watermeter
-* 
-
-
-
   Inputs:
   * water flow sensor
-  * door/window sensor
+  * door/window sensor(s)
   * others to follow (PIR / temp / humidity etc)
 
   Outputs:
@@ -26,6 +19,7 @@ Refs:
   Developed for:
   * https://www.adafruit.com/product/2821  feather huzzah
   * https://www.adafruit.com/product/828   water flow sensor
+            For this sensor: Liters = Pulses / (7.5 * 60)
   * https://www.adafruit.com/product/375   door/window sensor
 
   Future:
@@ -41,28 +35,30 @@ Refs:
   * Connect red to +5V
   * Connect black to common ground
   * Connect yellow data to pin #13
-  *   (interrupt cannot be attached to #16)
 
-  Setup door sensor
+  Setup first door sensor
   * Connect one end to common ground
   * Connect other to input pin #14 (use internal pullup)
 
 
   Notes
   * See https://learn.adafruit.com/adafruit-feather-huzzah-esp8266/faq
-  * Don't use GPIO 0, 2, 15 as these need certain values at boot
+  * Don't use GPIO 0, 2, 15 (these need certain values at boot)
+  * 
+  * Also: don't use GPIO 16 (cannot attach it to interrupt)
+  * 
    
 
 **********************************************************/
 
-// Needed for ESP8266 specific timer functions
-//extern "C" {
-//#include "user_interface.h"
-//}
+
+// dummy define to allow compilation outside of arduino ide
+#ifndef ICACHE_RAM_ATTR
+#define ICACHE_RAM_ATTR
+#endif
 
 
-
-// Use built-in LED for flash/output
+// Use built-in LED for flash/output  (not yet used)
 const int led = LED_BUILTIN;
 
 // Which pin for flow sensor input
@@ -74,6 +70,10 @@ const int led = LED_BUILTIN;
 
 // How often to show serial stats by default (in ms)
 #define statusFreq 5000
+
+// TODO: print stats based on volume of water flow
+//       e.g. print every 0.25l
+
 
 // vars changed by interrupt need to be marked "volatile" so 
 // as to not be optimized out by the compiler
@@ -103,9 +103,6 @@ void ICACHE_RAM_ATTR doorHandler()
 	doorState = digitalRead(DOORSENSORPIN);
 	doorChanged = 1;
 	lastSerial=0;   // flag for immediate output
-	
-	// debug - allow clearing counter easily
-	pulses=0;
 }
 
 
@@ -127,7 +124,6 @@ void setup() {
 	
 	// Flow sensor is for input - no pullup needed
 	pinMode(FLOWSENSORPIN, INPUT);
-
 
 
 
@@ -158,19 +154,9 @@ void loop()
 		Serial.print("Door State: ");  Serial.println(doorState);
 		Serial.print("Pulse count: "); Serial.println(pulses, DEC);
 		Serial.print("Liters: ");      Serial.println(pulses / (7.5 * 60.0));
-		
+	
 	}
 	
-	
-  // if a plastic sensor use the following calculation
-  // Sensor Frequency (Hz) = 7.5 * Q (Liters/min)
-  // Liters = Q * time elapsed (seconds) / 60 (seconds/minute)
-  // Liters = (Frequency (Pulses/second) / 7.5) * time elapsed (seconds) / 60
-  // Liters = Pulses / (7.5 * 60)
-  //float liters = pulses;
-  //liters /= 7.5;
-  //liters /= 60.0;
-
 
   yield();  // or delay(0);
   
