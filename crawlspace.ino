@@ -65,6 +65,9 @@
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 
+// MQTT client
+#include <PubSubClient.h>
+
 // Config held in separate file
 // const char* ssid = "SSID";
 // const char* password = "password";
@@ -72,6 +75,7 @@
 
 // static webserver content (avoids SPIFFS overhead for now)
 #include "index_html.h"
+#include "all_json.h"
 #include "favicon_ico.h"
 
 
@@ -118,10 +122,19 @@ volatile int printNow = 0;
 unsigned long lastSerial = 0;
 
 
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // TODO: handle message arrived
+}
+
+
+
+
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
 
-
+// Create MQTT Client
+WiFiClient espClient;
+PubSubClient mqttclient(mqttServer, mqttPort, mqttCallback, espClient);
 
 
 
@@ -169,6 +182,24 @@ String processor(const String& var){
 // 404 handler
 void notFound(AsyncWebServerRequest *request) {
     request->send(404, "text/plain", "Not found");
+}
+
+
+
+
+// mqtt publish update
+void mqttSendDoor() {
+	Serial.print("MQTT Connecting... ");
+	if (mqttclient.connect("arduinoClient", mqttuser, mqttpass)) {
+		Serial.print(" sending ...");
+		if (mqttclient.publish(mqttdoortopic, doorState ? "ON" : "OFF")) {
+			Serial.println("... success");
+		}
+		else { Serial.println("... failed"); }
+	}
+	else {
+		Serial.println("... failed.");
+	}
 }
 
 
@@ -227,10 +258,10 @@ void setup() {
 
 	server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request){
 		request->send_P(200, "image/png", favicon_ico_gz, favicon_ico_gz_len);
-		// For ICO format icon (which can be smaller, use this)
-		//AsyncWebServerResponse *response = request->beginResponse_P(200, "image/x-icon", favicon_ico_gz, favicon_ico_gz_len);
-		//response->addHeader("Content-Encoding", "gzip");
-		//request->send(response);
+	});
+	
+	server.on("/all.json", HTTP_GET, [](AsyncWebServerRequest *request){
+		request->send_P(200, "text/json", all_json, processor);
 	});
 	
 	
@@ -307,7 +338,7 @@ void setup() {
 
 
 	Serial.println("Connecting to wifi ....");
-	  WiFi.begin(ssid, password);
+	WiFi.begin(ssid, password);
 	Serial.println("");
 
 	// Wait for connection to finish and print details.
@@ -321,6 +352,10 @@ void setup() {
 	Serial.print("IP address: ");
 	Serial.println(WiFi.localIP());
 
+
+	// Connect to MQTT
+	Serial.println("Connecting to MQTT server: ");
+	
 }
 
 
@@ -341,12 +376,12 @@ void loop()
 				Serial.println("Lux sensor out of range - disabling");
 				have_lux = 0;
 			}
-				
+		
 		}
 		
 		Serial.println();
 		Serial.println(millis());
-		Serial.print("Door State: ");  Serial.println(doorState);
+		Serial.print("Door State: ");  Serial.println(doorState ? "open" : "closed");
 		Serial.print("Pulse count: "); Serial.println(pulses, DEC);
 		Serial.print("Liters: ");      Serial.println(pulses / (7.5 * 60.0));
 		
@@ -357,7 +392,19 @@ void loop()
 	}
 	
 
-  yield();  // or delay(0);
+	// Door status changed - push update
+	if (doorChanged) {
+		Serial.print("Sending MQTT update for door: ");
+		Serial.println(doorState ? "1" : "0");
+		mqttSendDoor();
+		doorChanged = 0;
+	}
+	
+	// TODO: do we need mqttclient.loop() when we're not subscribed to anything?
+	mqttclient.loop();
+
+
+	yield();  // or delay(0);
   
 }
 
