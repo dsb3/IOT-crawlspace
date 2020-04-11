@@ -12,9 +12,6 @@ const char* index_html = R"(
 <head>
   <title>Crawlspace Web Server</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
-  <link rel="icon" href="data:,">
-
 <style>
 html {
   /*font-family: Arial;*/

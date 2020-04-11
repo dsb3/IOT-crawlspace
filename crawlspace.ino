@@ -72,6 +72,7 @@
 
 // static webserver content (avoids SPIFFS overhead for now)
 #include "index_html.h"
+#include "favicon_ico.h"
 
 
 
@@ -170,10 +171,11 @@ void notFound(AsyncWebServerRequest *request) {
     request->send(404, "text/plain", "Not found");
 }
 
+
 void setup() {
 	// Setup
 	Serial.begin(115200);
-	Serial.println("Water Flow system starting.");
+	Serial.println("Crawlspace monitoring system starting.");
 
 
 
@@ -222,7 +224,16 @@ void setup() {
 	server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
 		request->send_P(200, "text/html", index_html, processor);
 	});
-  
+
+	server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request){
+		request->send_P(200, "image/png", favicon_ico_gz, favicon_ico_gz_len);
+		// For ICO format icon (which can be smaller, use this)
+		//AsyncWebServerResponse *response = request->beginResponse_P(200, "image/x-icon", favicon_ico_gz, favicon_ico_gz_len);
+		//response->addHeader("Content-Encoding", "gzip");
+		//request->send(response);
+	});
+	
+	
 	//// Examples with SPIFFS to read a data file from flash, with/without processing
 	// 
 	//server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
