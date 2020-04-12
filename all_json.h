@@ -17,7 +17,7 @@ const char* all_json = R"({
     "future-stuff": "in-here",
     "minute": "%FLOWMINUTE%",
     "hour": "%FLOWHOUR%",
-    "day": "%FLOWDAY%",
+    "day": "%FLOWDAY%"
   },
 
   "temperature": "%TEMPERATURE%",
