@@ -109,7 +109,7 @@ volatile unsigned long pulses = 0;
 
 Adafruit_VEML7700 veml = Adafruit_VEML7700();
 int have_lux = 1;
-volatile float lux = 0;
+volatile float lux = 0.0;
 
 
 volatile int doorState = 0;
@@ -133,9 +133,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 AsyncWebServer server(80);
 
 // Create MQTT Client
+#ifdef USEMQTT
 WiFiClient espClient;
 PubSubClient mqttclient(mqttServer, mqttPort, mqttCallback, espClient);
-
+#endif
 
 
 // Interrupt called on rising signal = just count them
@@ -173,7 +174,12 @@ String processor(const String& var){
 		sprintf(buffer, "%d", pulses);
 	}
 	else if (var == "LUMINANCE"){
-		sprintf(buffer, "%0.2f", lux);
+		if (have_lux) {
+			sprintf(buffer, "%0.2f", lux);
+		}
+		else {
+			sprintf(buffer, "-");
+		}
 	}
 	else if (var == "DOOR"){
 		sprintf(buffer, "%s", doorState ? "OPEN" : "CLOSED");
@@ -197,6 +203,7 @@ void notFound(AsyncWebServerRequest *request) {
 //
 // TODO: add QoS to try to ensure send/resend on disconnectedness
 //
+#ifdef USEMQTT
 void mqttSendDoor() {
 	return;
 	
@@ -212,6 +219,11 @@ void mqttSendDoor() {
 		Serial.println("... failed to connect.");
 	}
 }
+#else
+void mqttSendDoor() {
+	return;
+}
+#endif
 
 
 void setup() {
@@ -310,10 +322,17 @@ void setup() {
 	});
 	
 	server.on("/luminance", HTTP_GET, [](AsyncWebServerRequest *request){
-		char textplain[50];
-		lux = veml.readLux();
-		sprintf(textplain, "%0.2f", lux);
-		request->send_P(200, "text/plain", textplain);
+		// TODO: lux should be updated in the background, not on demand on this query
+		if (have_lux) {
+			char textplain[50];
+			lux = veml.readLux();
+			sprintf(textplain, "%0.2f", lux);
+			request->send_P(200, "text/plain", textplain);
+		}
+		else {
+			request->send_P(200, "text/plain", "-");
+		}
+		
 	});
   
 	server.on("/door", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -367,9 +386,11 @@ void setup() {
 	Serial.println(WiFi.localIP());
 
 
+#ifdef USEMQTT
 	// Connect to MQTT for initial update 
 	Serial.println("Connecting to MQTT server: ");
 	mqttSendDoor();
+#endif
 	
 	
 	// Wifi connection should have taken long enough to have a lux
@@ -422,9 +443,10 @@ void loop()
 		doorChanged = 0;
 	}
 	
+#ifdef USEMQTT
 	// TODO: do we need mqttclient.loop() when we're not subscribed to anything?
 	mqttclient.loop();
-
+#endif
 
 	yield();  // or delay(0);
   
