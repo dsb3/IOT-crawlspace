@@ -11,6 +11,14 @@ const char* password = "12345678";
 
 
 // Details of MQTT parameters
+const char* mqttServer = "192.168.x.y";
+const int   mqttPort = 1883;
+const char* mqttprefix = "not-yet-used-";
+const char* mqttuser = "crawlspace";
+const char* mqttpass = "1234123412341234";
+
+const char* mqttdoortopic = "ha/door/crawlspace/door";
+
 
 
 
