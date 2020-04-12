@@ -169,11 +169,17 @@ String processor(const String& var){
 	else if (var == "WATERFLOW"){
 		sprintf(buffer, "%.2f", pulses / 450.0);
 	}
+	else if (var == "FLOWPULSES") {
+		sprintf(buffer, "%d", pulses);
+	}
 	else if (var == "LUMINANCE"){
 		sprintf(buffer, "%0.2f", lux);
 	}
 	else if (var == "DOOR"){
 		sprintf(buffer, "%s", doorState ? "OPEN" : "CLOSED");
+	}
+	else {
+		sprintf(buffer, "-");
 	}  
 	
 	return buffer;
@@ -246,6 +252,7 @@ void setup() {
 		veml.setLowThreshold(10000);
 		veml.setHighThreshold(20000);
 		veml.interruptEnable(true);
+		
 	} // setup lux
 
 
@@ -261,8 +268,15 @@ void setup() {
 	});
 	
 	server.on("/all.json", HTTP_GET, [](AsyncWebServerRequest *request){
+		// Serial.println("GET /all.json");
 		request->send_P(200, "text/json", all_json, processor);
 	});
+	
+	server.on("/flow.json", HTTP_GET, [](AsyncWebServerRequest *request){
+		request->send_P(200, "text/json", flow_json, processor);
+	});
+
+
 	
 	
 	//// Examples with SPIFFS to read a data file from flash, with/without processing
@@ -356,6 +370,13 @@ void setup() {
 	// Connect to MQTT
 	Serial.println("Connecting to MQTT server: ");
 	
+	
+	
+	// Wifi connection should have taken long enough to have a lux
+	// value ready
+	if (have_lux)
+		lux = veml.readLux();
+		
 }
 
 
@@ -381,7 +402,7 @@ void loop()
 		
 		Serial.println();
 		Serial.println(millis());
-		Serial.print("Door State: ");  Serial.println(doorState ? "open" : "closed");
+		Serial.print("Door State: ");  Serial.println(doorState ? "OPEN" : "CLOSED");
 		Serial.print("Pulse count: "); Serial.println(pulses, DEC);
 		Serial.print("Liters: ");      Serial.println(pulses / (7.5 * 60.0));
 		
