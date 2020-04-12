@@ -24,6 +24,8 @@ const char* all_json = R"({
   "temp_scale": "F",
   "humidity": "%HUMIDITY%",
 
+  "motion": "%MOTION%",
+  
   "uptime": "%UPTIME%",
   "millis": "%MILLIS%"
 }

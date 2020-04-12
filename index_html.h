@@ -48,7 +48,7 @@ h1 {
     <span id="door">%DOOR%</span>
   </p>
   <p>
-    <span class="sensor-labels">(uptime)</span>
+    <span class="sensor-labels">uptime: </span>
     <span id="uptime">%UPTIME%</span>
   </p>
 </body>
