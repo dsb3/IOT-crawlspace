@@ -84,6 +84,9 @@
 const int led = LED_BUILTIN;
 
 
+// read MAC address once and save it
+char macaddr[32] = "";
+
 // Which pin for flow sensor input
 #define FLOWSENSORPIN 13
 
@@ -209,6 +212,9 @@ String processor(const String& var){
 	}
 	else if (var == "DOOR") {
 		sprintf(buffer, "%s", doorState ? "OPEN" : "CLOSED");
+	}
+	else if (var == "MACADDR") {
+		sprintf(buffer, macaddr);
 	}
 	else {
 		sprintf(buffer, "-");
@@ -408,6 +414,11 @@ void setup() {
 	Serial.println(ssid);
 	Serial.print("IP address: ");
 	Serial.println(WiFi.localIP());
+
+	// Read and save mac address one time since it won't change
+	sprintf(macaddr, WiFi.macAddress().c_str());
+	Serial.print("MAC address: ");
+	Serial.println(macaddr);
 
 
 #ifdef USEMQTT

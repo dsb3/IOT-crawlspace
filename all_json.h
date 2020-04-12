@@ -3,7 +3,7 @@
 
 const char* all_json = R"({
   "name": "Crawlspace",
-  "id": 12345678,
+  "macaddr": "%MACADDR%",
 
   "door": "%DOOR%",
   
