@@ -4,6 +4,14 @@ IOT for crawlspace monitor
 
 Created with the Adafruit Feather Huzzah in mind.  Probably works with a bunch of other stuff as well, but I know for a fact the code needs editing to work with ESP32.
 
+## Getting Started
+
+Copy example-config.h to private-config.h and fill in values with whatever is appropriate for your environment.
+
+I create a permanent DHCP mapping for my device so I can reach it by the same address every time.  If you can do the same, do so, otherwise look into mDNS or assigning a static IP in the code.
+
+Compile and upload the code to a Feather Huzzah.  Plug in the components into the pins mentioned.  Check the output over serial console is sensible.  Check the output over the URLs is sensible.  Then plug it in wherever your water meter is.
+
 
 ## Sample Integration
 
