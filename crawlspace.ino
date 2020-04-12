@@ -174,7 +174,7 @@ String processor(const String& var){
 		if (m > (1000 * 60 * 60 * 24)) {
 			sprintf(buffer, "%0d day%s, %02d:%02d",
 				(int) (m / (1000 * 60 * 60 * 24)),
-				(m > (2 * 1000 * 60 * 60 * 24) ? "s" : ""),  // plural?
+				(m >= (2 * 1000 * 60 * 60 * 24) ? "s" : ""),  // plural?
 				(int) (m / (1000 * 60 * 60) % 24),
 				(int) (m / (1000 * 60) % 60));
 		}
