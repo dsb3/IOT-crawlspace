@@ -50,8 +50,7 @@ h1 {
   </p>
   <p>
     <span class="sensor-labels">(uptime)</span>
-    <span id="millis">%MILLIS%</span>
-    <sup class="units">ms</sup>
+    <span id="uptime">%UPTIME%</span>
   </p>
 </body>
 
@@ -64,7 +63,7 @@ h1 {
         document.getElementById("waterflow").innerHTML = this.responseText;
       }
     };
-    xhttp.open("GET", "/waterflow", true);
+    xhttp.open("GET", "/stat?WATERFLOW", true);
     xhttp.send();
   }, 10000 ) ;
 
@@ -75,7 +74,7 @@ h1 {
         document.getElementById("luminance").innerHTML = (this.status == 200 ? this.responseText : "-");
       }
     };
-    xhttp.open("GET", "/luminance", true);
+    xhttp.open("GET", "/stat?LUMINANCE", true);
     xhttp.send();
   }, 10000 ) ;
 
@@ -86,7 +85,7 @@ h1 {
         document.getElementById("door").innerHTML = this.responseText;
       }
     };
-    xhttp.open("GET", "/door", true);
+    xhttp.open("GET", "/stat?DOOR", true);
     xhttp.send();
   }, 10000 ) ;
 
@@ -94,10 +93,10 @@ h1 {
     var xhttp = new XMLHttpRequest();
     xhttp.onreadystatechange = function() {
       if (this.readyState == 4 && this.status == 200) {
-        document.getElementById("millis").innerHTML = this.responseText;
+        document.getElementById("uptime").innerHTML = this.responseText;
       }
     };
-    xhttp.open("GET", "/millis", true);
+    xhttp.open("GET", "/stat?UPTIME", true);
     xhttp.send();
   }, 10000 ) ;
 

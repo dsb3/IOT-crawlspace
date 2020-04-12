@@ -164,24 +164,50 @@ void ICACHE_RAM_ATTR doorHandler()
 String processor(const String& var){
 	char buffer[50];
 	
-	if(var == "MILLIS"){
+	if(var == "MILLIS") {
 		sprintf(buffer, "%d", millis());
 	}
-	else if (var == "WATERFLOW"){
+	else if (var == "UPTIME") {
+		unsigned long m = millis();
+		
+		// > 1 day
+		if (m > (1000 * 60 * 60 * 24)) {
+			sprintf(buffer, "%0d day%s, %02d:%02d",
+				(int) (m / (1000 * 60 * 60 * 24)),
+				(m > (2 * 1000 * 60 * 60 * 24) ? "s" : ""),  // plural?
+				(int) (m / (1000 * 60 * 60) % 24),
+				(int) (m / (1000 * 60) % 60));
+		}
+		// > 1 hour
+		else if (m > (1000 * 60 * 60)) {
+			sprintf(buffer, "%02d:%02d:%02d",
+				(int) (m / (1000 * 60 * 60) % 24),
+				(int) (m / (1000 * 60) % 60),
+				(int) (m / 1000 % 60));
+		}
+		else {
+			sprintf(buffer, "%02d:%02d",
+				(int) (m / (1000 * 60) % 60),
+				(int) (m / 1000 % 60));
+		}
+	
+	}
+	else if (var == "WATERFLOW") {
 		sprintf(buffer, "%.2f", pulses / 450.0);
 	}
 	else if (var == "FLOWPULSES") {
 		sprintf(buffer, "%d", pulses);
 	}
-	else if (var == "LUMINANCE"){
-		if (have_lux) {
-			sprintf(buffer, "%0.2f", lux);
-		}
-		else {
-			sprintf(buffer, "-");
-		}
+	// TODO : process lux in the background, not here!
+	// TODO : do not try to read lux more than every N seconds
+	//
+	// NOTE: reading lux with veml missing causes board to crash
+	//
+	else if (var == "LUMINANCE" && have_lux) {
+		lux = veml.readLux();
+		sprintf(buffer, "%0.2f", lux);
 	}
-	else if (var == "DOOR"){
+	else if (var == "DOOR") {
 		sprintf(buffer, "%s", doorState ? "OPEN" : "CLOSED");
 	}
 	else {
@@ -305,42 +331,40 @@ void setup() {
 	//	request->send(SPIFFS, "/style.css", "text/css");
 	//});
 	
-	// Note - only a subset of everything in all.json is available for individual
-	// text queries here.
-	// TODO: better js in the index.html to get one json file, parse, and update
-	//
-	server.on("/millis", HTTP_GET, [](AsyncWebServerRequest *request){
-		char textplain[50];
-		sprintf(textplain, "%d", millis());
-		request->send_P(200, "text/plain", textplain);
-	});
-  
-	server.on("/waterflow", HTTP_GET, [](AsyncWebServerRequest *request){
-		char textplain[50];
-		sprintf(textplain, "%.2f", pulses / 450.0);
-		request->send_P(200, "text/plain", textplain);
+	
+	// Example of single URL with parameter substitution
+	server.on("/healthz", HTTP_GET, [](AsyncWebServerRequest *request) {
+		request->send_P(200, "text/plain", (const char*)"OK. Up %UPTIME%.", processor);
 	});
 	
-	server.on("/luminance", HTTP_GET, [](AsyncWebServerRequest *request){
-		// TODO: lux should be updated in the background, not on demand on this query
-		if (have_lux) {
-			char textplain[50];
-			lux = veml.readLux();
-			sprintf(textplain, "%0.2f", lux);
-			request->send_P(200, "text/plain", textplain);
+	
+	// Provide /stat? URL with dynamic args - this avoids us needing to
+	// create a dozen handlers for each individual stat.
+	//
+	// Sanity check input:
+	// - must be only single param.
+	// - only name present, not value
+	// - name must be <= 32 chars
+	// - TODO: name must be only alpha (and uppercase it)
+	
+	server.on("/stat", HTTP_GET, [](AsyncWebServerRequest *request) {
+		// Static error page; we overwrite this with a template string, or
+		// pass it through "as is" if parameters weren't read correctly.
+		
+		char buff[64] = "Usage: /stat?PARAMETER";
+		// TODO: other sanity checks.
+		if (request->params() == 1  &&
+				request->getParam(0)->name().length() <= 32 &&
+				request->getParam(0)->value().length() == 0) {
+			sprintf(buff, "%%%s%%", request->getParam(0)->name().c_str());
 		}
-		else {
-			request->send_P(200, "text/plain", "-");
-		}
+		request->send_P(200, "text/plain", buff, processor);
 		
 	});
-  
-	server.on("/door", HTTP_GET, [](AsyncWebServerRequest *request){
-		request->send_P(200, "text/plain", (doorState ? "OPEN" : "CLOSED"));
-	});
-
+	
 	// 404 handler
 	server.onNotFound(notFound);
+	
 	
 	// Start server
 	server.begin();

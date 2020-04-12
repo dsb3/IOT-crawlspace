@@ -24,7 +24,8 @@ const char* all_json = R"({
   "temp_scale": "F",
   "humidity": "%HUMIDITY%",
 
-  "uptime": "%MILLIS%"
+  "uptime": "%UPTIME%",
+  "millis": "%MILLIS%"
 }
 )";
 
@@ -34,6 +35,6 @@ const char* flow_json = R"({
   "flowcount":  "%WATERFLOW%",
   "flowunits":  "L",
   
-  "uptime": "%MILLIS%"
+  "millis": "%MILLIS%"
 }
 )";
