@@ -112,7 +112,7 @@ int have_lux = 1;
 volatile float lux = 0;
 
 
-volatile int doorState;
+volatile int doorState = 0;
 volatile int doorChanged = 0;
 
 // Used for serial output
@@ -123,7 +123,7 @@ unsigned long lastSerial = 0;
 
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  // TODO: handle message arrived
+  // empty - only used for subscribed topics
 }
 
 
@@ -194,17 +194,22 @@ void notFound(AsyncWebServerRequest *request) {
 
 
 // mqtt publish update
+//
+// TODO: add QoS to try to ensure send/resend on disconnectedness
+//
 void mqttSendDoor() {
+	return;
+	
 	Serial.print("MQTT Connecting... ");
 	if (mqttclient.connect("arduinoClient", mqttuser, mqttpass)) {
 		Serial.print(" sending ...");
 		if (mqttclient.publish(mqttdoortopic, doorState ? "ON" : "OFF")) {
-			Serial.println("... success");
+			Serial.println("... successfully sent.");
 		}
-		else { Serial.println("... failed"); }
+		else { Serial.println("... failed to send."); }
 	}
 	else {
-		Serial.println("... failed.");
+		Serial.println("... failed to connect.");
 	}
 }
 
@@ -252,7 +257,7 @@ void setup() {
 		veml.setLowThreshold(10000);
 		veml.setHighThreshold(20000);
 		veml.interruptEnable(true);
-		
+	
 	} // setup lux
 
 
@@ -287,16 +292,11 @@ void setup() {
 	//server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request){
 	//	request->send(SPIFFS, "/style.css", "text/css");
 	//});
-
-	// Route to set GPIO to HIGH
-	// TODO: this is wrong; these should be POST, not GET
-	// Keep this for now as a template for our /json query to follow
-	//server.on("/on", HTTP_GET, [](AsyncWebServerRequest *request){
-	//	//digitalWrite(ledPin, HIGH);    
-	//	request->send(SPIFFS, "/index.html", String(), false, processor);
-	//});
-
 	
+	// Note - only a subset of everything in all.json is available for individual
+	// text queries here.
+	// TODO: better js in the index.html to get one json file, parse, and update
+	//
 	server.on("/millis", HTTP_GET, [](AsyncWebServerRequest *request){
 		char textplain[50];
 		sprintf(textplain, "%d", millis());
@@ -367,13 +367,14 @@ void setup() {
 	Serial.println(WiFi.localIP());
 
 
-	// Connect to MQTT
+	// Connect to MQTT for initial update 
 	Serial.println("Connecting to MQTT server: ");
-	
+	mqttSendDoor();
 	
 	
 	// Wifi connection should have taken long enough to have a lux
 	// value ready
+	// TODO: read lux based way more frequently, based on simpleTimer
 	if (have_lux)
 		lux = veml.readLux();
 		
@@ -385,10 +386,18 @@ void setup() {
 void loop()
 {
 
+	// TODO: deprecate serial output.
+	
 	// Print serial status when prompted, or every N milliseconds
 	if (printNow || millis() - lastSerial > statusFreq) {
 		lastSerial=millis();
 		printNow = 0;
+		
+				Serial.println();
+		Serial.println(millis());
+		Serial.print("Door State: ");  Serial.println(doorState ? "OPEN" : "CLOSED");
+		Serial.print("Pulse count: "); Serial.println(pulses, DEC);
+		Serial.print("Liters: ");      Serial.println(pulses / (7.5 * 60.0));
 		
 		if (have_lux) {
 			lux = veml.readLux();
@@ -397,26 +406,18 @@ void loop()
 				Serial.println("Lux sensor out of range - disabling");
 				have_lux = 0;
 			}
-		
-		}
-		
-		Serial.println();
-		Serial.println(millis());
-		Serial.print("Door State: ");  Serial.println(doorState ? "OPEN" : "CLOSED");
-		Serial.print("Pulse count: "); Serial.println(pulses, DEC);
-		Serial.print("Liters: ");      Serial.println(pulses / (7.5 * 60.0));
-		
-		if (have_lux) {
-			Serial.println();
-			Serial.print("Lux: ");         Serial.println(lux);
+			else {
+				Serial.println();
+				Serial.print("Lux: "); Serial.println(lux);
+			}
 		}
 	}
 	
 
-	// Door status changed - push update
+	// if door status changed - send update
 	if (doorChanged) {
 		Serial.print("Sending MQTT update for door: ");
-		Serial.println(doorState ? "1" : "0");
+		Serial.println(doorState ? "ON" : "OFF");
 		mqttSendDoor();
 		doorChanged = 0;
 	}
