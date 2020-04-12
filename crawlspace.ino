@@ -53,7 +53,20 @@
   * 
   * Also: don't use GPIO 16 (cannot attach it to interrupt)
   * 
-   
+  
+  
+  
+  TODO:
+  * Handle millis() rollover.  Perhaps NTP time instead?
+  * OTA updates
+  * Test against cheaper lux sensor (Candidate: MAX44009)
+  * Add code for temp/humidity
+  * Add code for PIR sensor
+  * Push mqtt event on water starting to flow -- permit polling to
+       be less frequent, but still be alerted immediately on change.
+  * ...
+  * 
+
 
 **********************************************************/
 
@@ -240,7 +253,8 @@ void mqttSendDoor() {
 	return;
 	
 	Serial.print("MQTT Connecting... ");
-	if (mqttclient.connect("arduinoClient", mqttuser, mqttpass)) {
+	// TODO: embed macaddr in client identifier
+	if (mqttclient.connect("esp8266", mqttuser, mqttpass)) {
 		Serial.print(" sending ...");
 		if (mqttclient.publish(mqttdoortopic, doorState ? "ON" : "OFF")) {
 			Serial.println("... successfully sent.");
@@ -340,7 +354,7 @@ void setup() {
 	
 	// Example of single URL with parameter substitution
 	server.on("/healthz", HTTP_GET, [](AsyncWebServerRequest *request) {
-		request->send_P(200, "text/plain", (const char*)"OK. Up %UPTIME%.", processor);
+		request->send_P(200, "text/plain", (const char*)"OK. Up %UPTIME% (%MILLIS%).", processor);
 	});
 	
 	
