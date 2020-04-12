@@ -5,8 +5,7 @@ const char* index_html = R"(
 
 <!DOCTYPE html>
 <!-- 
-  Based on original code from
-    Rui Santos https://RandomNerdTutorials.com  
+  Web front end for diags.  Integration should use /all.json
 -->
 <html>
 <head>
