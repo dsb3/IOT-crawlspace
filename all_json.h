@@ -7,8 +7,6 @@ const char* all_json = R"({
 
   "door": "%DOOR%",
   
-  "luminance": "%LUMINANCE%",
-    
   "flowpulses": "%FLOWPULSES%",  
   "flowcount": "%WATERFLOW%",
   "flowunits": "L",
@@ -18,6 +16,14 @@ const char* all_json = R"({
     "minute": "%FLOWMINUTE%",
     "hour": "%FLOWHOUR%",
     "day": "%FLOWDAY%"
+  },
+
+  "luminance": "%LUMINANCE%",
+
+  "luxstats": {
+    "future-stuff": "in-here",
+    "luxhighmin": "%LUXHIGHMIN%",
+    "luxlowmin":  "%LUXLOWMIN%"
   },
 
   "temperature": "%TEMPERATURE%",
