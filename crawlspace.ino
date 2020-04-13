@@ -221,6 +221,11 @@ void ICACHE_RAM_ATTR doorHandler()
 
 // processor function is called for our HTML file and
 // replaces tags (e.g. %STATE%) with the value returned here
+//
+// TODO: Update template to remove quotes
+//       and fill in literal "null" in place of -
+// ^- but would break same format inserted into json and text/plain
+
 String processor(const String& var){
 	char buffer[50];
 	
@@ -323,8 +328,7 @@ void webNotFound(AsyncWebServerRequest *request) {
 //
 #ifdef USEMQTT
 void mqttSendDoor() {
-	return;
-	
+		
 	Serial.print("MQTT Connecting... ");
 	// TODO: embed macaddr in client identifier
 	if (mqttclient.connect("esp8266", mqttuser, mqttpass)) {
@@ -584,7 +588,12 @@ void loop()
 	}
 	
 	
+	
+	
+	
 	// TODO: deprecate serial output.
+	// TODO: print timestamp (clock time) on serial to better correlate with
+	// unexpected system crashes.
 	
 	// Print serial status when prompted, or every N milliseconds
 	if (printNow || millis() - lastSerial > statusFreq) {
