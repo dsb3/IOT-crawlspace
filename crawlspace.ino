@@ -196,7 +196,12 @@ AsyncWebServer server(80);
 #ifdef USEMQTT
 WiFiClient espClient;
 PubSubClient mqttclient(mqttServer, mqttPort, mqttCallback, espClient);
+
+// TODO: this is a calamity; I need to re-learn C++ string handling!
+char mqttSendTopic[128];
+
 #endif
+
 
 
 // Interrupt called on rising signal = just count them
@@ -331,29 +336,20 @@ void webNotFound(AsyncWebServerRequest *request) {
 //
 #ifdef USEMQTT
 void mqttSendDoor() {
-	// TODO: this is a calamity; I need to re-learn C++ string handling!
-	char sendTopic[64];
-	
-	strcpy(sendTopic, mqttDoorTopicDefault);  // default
 	
 	Serial.print("MQTT Connecting... ");
+	
 	// TODO: embed macaddr in client identifier
 	if (mqttclient.connect("esp8266", mqttuser, mqttpass)) {
-		Serial.print(" sending ... ");
-		if (strcmp(macaddr, prodMac) == 0) {
-			strcpy(sendTopic, mqttDoorTopicProd);
+		Serial.print("sending ... ");
+		
+		if (mqttclient.publish(mqttSendTopic, doorState ? "ON" : "OFF")) {
+			Serial.println("successfully sent.");
 		}
-		else if (strcmp(macaddr, devMac) == 0) {
-			strcpy(sendTopic, mqttDoorTopicDev);
-		}
-		Serial.print(sendTopic);
-		if (mqttclient.publish(sendTopic, doorState ? "ON" : "OFF")) {
-			Serial.println(" ... successfully sent.");
-		}
-		else { Serial.println(" ... failed to send."); }
+		else { Serial.println("failed to send."); }
 	}
 	else {
-		Serial.println("... failed to connect.");
+		Serial.println("failed to connect.");
 	}
 }
 #else
@@ -545,6 +541,21 @@ void setup() {
 
 
 #ifdef USEMQTT
+	// Hackery -- configure the mqttSendTopic based on local MAC addr
+	if (strcmp(macaddr, prodMac) == 0) {
+		strcpy(mqttSendTopic, mqttDoorTopicProd);
+	}
+	else if (strcmp(macaddr, devMac) == 0) {
+		strcpy(mqttSendTopic, mqttDoorTopicDev);
+	}
+	else {
+		strcpy(mqttSendTopic, mqttDoorTopicDefault);  // default
+	}
+	
+	Serial.print("Using mqtt door topic: ");
+	Serial.println(mqttSendTopic);
+
+
 	// Connect to MQTT for initial update 
 	Serial.println("Connecting to MQTT server: ");
 	mqttSendDoor();
