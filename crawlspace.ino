@@ -46,25 +46,34 @@
   * Connect one end to common ground
   * Connect other to input pin #14 (use internal pullup)
 
+  Setup DHT22 temp/humidity sensor
+  * Connect to +v, gnd (docs say it might need 5v, but 3.3v tests fine)
+  * I tested with/without the 10k resistor; seems to not be needed
+  * Data pin goes to #12
+
 
   Notes
   * See https://learn.adafruit.com/adafruit-feather-huzzah-esp8266/faq
-  * Don't use GPIO 0, 2, 15 (these need certain values at boot)
+  * Avoid using GPIO 0, 2, 15 (these need certain values at boot)
   * 
-  * Also: don't use GPIO 16 (cannot attach it to interrupt)
+  * Also: don't use GPIO 16 for door sensor, etc; cannot attach it to interrupt
   * 
   
   
   
   TODO:
   * Handle millis() rollover.  Perhaps NTP time instead?
+  * Split .ino into multiple files for management - http://www.gammon.com.au/forum/?id=12625
   * OTA updates
   * Test against cheaper lux sensor (Candidate: MAX44009)
-  * Add code for temp/humidity
   * Add code for PIR sensor
   * Push mqtt event on water starting to flow -- permit polling to
        be less frequent, but still be alerted immediately on change.
   * ...
+  * Because luminance can change far more rapidly than it's polled:
+    * report spot-luminance -- i.e. absolute last value
+    * report high-lum -- highest it's been in the past minute/15m/30m/...
+    * report low-lum  -- lowest it's been in the same period
   * 
 
 
@@ -90,6 +99,34 @@
 #include "index_html.h"
 #include "all_json.h"
 #include "favicon_ico.h"
+
+
+// Temp/Humidity stuff - based on sample sketch
+//   https://learn.adafruit.com/dht/overview
+//
+// In development I had some issues with sensors interacting with
+// each other, so this is here to easily turn off/on separate sections.
+//
+#ifdef TEMPHUMIDITY
+
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
+#include <DHT_U.h>
+
+#define DHTPIN 12     // Digital pin connected to the DHT sensor 
+#define DHTTYPE DHT22
+
+DHT_Unified dht(DHTPIN, DHTTYPE);
+uint32_t delayTempHumidity;
+
+#endif
+
+// these vars outside the IFDEF since ..Good will stay bad and not print
+volatile float temp = 0.0;
+volatile boolean tempGood = 0;  // not good before first reading
+volatile float humidity = 0.0;
+volatile boolean humidityGood = 0;
+
 
 
 
@@ -124,9 +161,10 @@ volatile unsigned long pulses = 0;
 #include "Adafruit_VEML7700.h"
 
 Adafruit_VEML7700 veml = Adafruit_VEML7700();
-int have_lux = 1;
+volatile boolean luxPresent = 0;   // sensor initialized ok
+volatile boolean luxGood = 0;
 volatile float lux = 0.0;
-
+uint32_t delayLuminance = 1000;
 
 volatile int doorState = 0;
 volatile int doorChanged = 0;
@@ -136,6 +174,12 @@ volatile int printNow = 0;
 
 // Timer to print serial output regardless of activity
 unsigned long lastSerial = 0;
+
+// Timer to capture last poll of sensors
+// TODO: sanity check for millis() rolling over
+unsigned long lastTempHumidity = 0;
+unsigned long lastLuminance = 0;
+
 
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -183,12 +227,13 @@ String processor(const String& var){
 	if(var == "MILLIS") {
 		sprintf(buffer, "%d", millis());
 	}
+	// TODO: millis() will rollover every ~50 days.  Use NTP here.
 	else if (var == "UPTIME") {
 		unsigned long m = millis();
 		
 		// > 1 day
 		if (m > (1000 * 60 * 60 * 24)) {
-			sprintf(buffer, "%0d day%s, %02d:%02d",
+			sprintf(buffer, "%0d day%s, %02d:%02ds",
 				(int) (m / (1000 * 60 * 60 * 24)),
 				(m >= (2 * 1000 * 60 * 60 * 24) ? "s" : ""),  // plural?
 				(int) (m / (1000 * 60 * 60) % 24),
@@ -196,13 +241,13 @@ String processor(const String& var){
 		}
 		// > 1 hour
 		else if (m > (1000 * 60 * 60)) {
-			sprintf(buffer, "%02d:%02d:%02d",
+			sprintf(buffer, "%02d:%02d:%02ds",
 				(int) (m / (1000 * 60 * 60) % 24),
 				(int) (m / (1000 * 60) % 60),
 				(int) (m / 1000 % 60));
 		}
 		else {
-			sprintf(buffer, "%02d:%02d",
+			sprintf(buffer, "%02d:%02ds",
 				(int) (m / (1000 * 60) % 60),
 				(int) (m / 1000 % 60));
 		}
@@ -214,14 +259,14 @@ String processor(const String& var){
 	else if (var == "FLOWPULSES") {
 		sprintf(buffer, "%d", pulses);
 	}
-	// TODO : process lux in the background, not here!
-	// TODO : do not try to read lux more than every N seconds
-	//
-	// NOTE: reading lux with veml missing causes board to crash
-	//
-	else if (var == "LUMINANCE" && have_lux) {
-		lux = veml.readLux();
+	else if (var == "LUMINANCE" && luxGood) {
 		sprintf(buffer, "%0.2f", lux);
+	}
+	else if (var == "TEMPERATURE" && tempGood) {
+		sprintf(buffer, "%0.2f", temp);
+	}
+	else if (var == "HUMIDITY" && humidityGood) {
+		sprintf(buffer, "%0.2f", humidity);
 	}
 	else if (var == "DOOR") {
 		sprintf(buffer, "%s", doorState ? "OPEN" : "CLOSED");
@@ -236,8 +281,36 @@ String processor(const String& var){
 	return buffer;
 }
 
+
+// Provide /stat? URL with dynamic args - this avoids us needing to
+// create a dozen handlers for each individual stat.  Any param is
+// passed into the processor() function which just sets to "-" if the
+// parameter isn't recognized.
+//
+// Sanity check input:
+// - must be only single param.
+// - only name present, not value (note: /stat?FOO= will still work here)
+// - name must be <= 32 chars
+// - TODO: name must be only alpha (and uppercase it)
+//
+void webStat(AsyncWebServerRequest *request) {
+	// Static error page; we overwrite this with a template string, or
+	// pass it through "as is" if parameters weren't read correctly.
+	
+	char buff[64] = "Usage: /stat?PARAMETER\n";
+	// TODO: other sanity checks.
+	if (request->params() == 1  &&
+			request->getParam(0)->name().length() <= 32 &&
+			request->getParam(0)->value().length() == 0) {
+		sprintf(buff, "%%%s%%", request->getParam(0)->name().c_str());
+	}
+	request->send_P(200, "text/plain", buff, processor);
+	
+}
+
+
 // 404 handler
-void notFound(AsyncWebServerRequest *request) {
+void webNotFound(AsyncWebServerRequest *request) {
     request->send(404, "text/plain", "Not found");
 }
 
@@ -279,15 +352,52 @@ void setup() {
 
 
 
+
+#ifdef TEMPHUMIDITY
+  // Initialize device.
+  dht.begin();
+  // Print temperature sensor details.
+  sensor_t sensor;
+  dht.temperature().getSensor(&sensor);
+  Serial.println(F("------------------------------------"));
+  Serial.println(F("Temperature Sensor"));
+  Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
+  Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
+  Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
+  Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("°C"));
+  Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("°C"));
+  Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("°C"));
+  Serial.println(F("------------------------------------"));
+  // Print humidity sensor details.
+  dht.humidity().getSensor(&sensor);
+  Serial.println(F("Humidity Sensor"));
+  Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
+  Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
+  Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
+  Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("%"));
+  Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("%"));
+  Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("%"));
+  Serial.println(F("------------------------------------"));
+  // Set delay between sensor readings based on sensor details.
+  Serial.print  (F("Min Delay:   ")); Serial.println(sensor.min_delay);
+  Serial.println(F("------------------------------------"));
+  delayTempHumidity = sensor.min_delay / 1000;   // given in us; convert to ms.
+
+  // From observation on the DHT22 this is 2000ms.  We'll poll slower.
+  delayTempHumidity = 5000;
+  
+#endif
+
+
 	// Setup VEML7700 lux sensor
 	// TODO: in testing, if I unplug the lux sensor it starts
 	// giving unreasonably high readings.  If we see this, we can
 	// just disable it - flag as "unavailable".
 	if (!veml.begin()) {
 		Serial.println("Lux sensor not found");
-		have_lux=0;
 	}
 	else {
+		luxPresent = 1;
 		Serial.println("Initializing Lux sensor");
 		veml.setGain(VEML7700_GAIN_1);
 		veml.setIntegrationTime(VEML7700_IT_800MS);
@@ -352,38 +462,19 @@ void setup() {
 	//});
 	
 	
-	// Example of single URL with parameter substitution
+	// Example of simple URL with parameter substitution
+	// TODO - obvs web server is online to return a result; could check
+	// mqtt client/ntp client status and report.  Could also check for
+	// hardware (e.g. if lux sensor disabled) and report.
 	server.on("/healthz", HTTP_GET, [](AsyncWebServerRequest *request) {
-		request->send_P(200, "text/plain", (const char*)"OK. Up %UPTIME% (%MILLIS%).", processor);
+		request->send_P(200, "text/plain", (const char*)"OK. Up %UPTIME% (%MILLIS%ms).\n", processor);
 	});
 	
 	
-	// Provide /stat? URL with dynamic args - this avoids us needing to
-	// create a dozen handlers for each individual stat.
-	//
-	// Sanity check input:
-	// - must be only single param.
-	// - only name present, not value
-	// - name must be <= 32 chars
-	// - TODO: name must be only alpha (and uppercase it)
-	
-	server.on("/stat", HTTP_GET, [](AsyncWebServerRequest *request) {
-		// Static error page; we overwrite this with a template string, or
-		// pass it through "as is" if parameters weren't read correctly.
-		
-		char buff[64] = "Usage: /stat?PARAMETER";
-		// TODO: other sanity checks.
-		if (request->params() == 1  &&
-				request->getParam(0)->name().length() <= 32 &&
-				request->getParam(0)->value().length() == 0) {
-			sprintf(buff, "%%%s%%", request->getParam(0)->name().c_str());
-		}
-		request->send_P(200, "text/plain", buff, processor);
-		
-	});
-	
-	// 404 handler
-	server.onNotFound(notFound);
+
+	// Other handlers
+	server.on("/stat", HTTP_GET, webStat);
+	server.onNotFound(webNotFound);
 	
 	
 	// Start server
@@ -441,13 +532,6 @@ void setup() {
 	mqttSendDoor();
 #endif
 	
-	
-	// Wifi connection should have taken long enough to have a lux
-	// value ready
-	// TODO: read lux based way more frequently, based on simpleTimer
-	if (have_lux)
-		lux = veml.readLux();
-		
 }
 
 
@@ -456,6 +540,50 @@ void setup() {
 void loop()
 {
 
+#ifdef TEMPHUMIDITY
+	// refresh sensors, avoiding refreshing "too often"
+	if (millis() - lastTempHumidity > delayTempHumidity) {
+		lastTempHumidity = millis();
+		
+		sensors_event_t event;
+		dht.temperature().getEvent(&event);
+		if (isnan(event.temperature)) {
+			tempGood = 0;
+		}
+		else {
+			temp = (event.temperature * 1.8) + 32;
+			tempGood = 1;
+		}
+		
+		// repeat for humidity
+		dht.humidity().getEvent(&event);
+		if (isnan(event.relative_humidity)) {
+			humidityGood = 0;
+		}
+		else {
+			humidity = event.relative_humidity;
+			humidityGood = 1;
+		}
+	}
+#endif
+
+
+	// Note: trying to readLux() with the board absent will cause
+	// the entire platform to crash.
+	if (millis() - lastLuminance > delayLuminance && luxPresent) {
+		lastLuminance = millis();
+		lux = veml.readLux();
+		
+		if (lux == 989560448.00) {   // from observation
+			Serial.println("Lux sensor out of range - disabling");
+			luxGood = 0;
+		} else {
+			luxGood = 1;
+		}
+		
+	}
+	
+	
 	// TODO: deprecate serial output.
 	
 	// Print serial status when prompted, or every N milliseconds
@@ -468,18 +596,19 @@ void loop()
 		Serial.print("Door State: ");  Serial.println(doorState ? "OPEN" : "CLOSED");
 		Serial.print("Pulse count: "); Serial.println(pulses, DEC);
 		Serial.print("Liters: ");      Serial.println(pulses / (7.5 * 60.0));
-		
-		if (have_lux) {
-			lux = veml.readLux();
-			
-			if (lux == 989560448.00) {   // from observation
-				Serial.println("Lux sensor out of range - disabling");
-				have_lux = 0;
-			}
-			else {
-				Serial.println();
-				Serial.print("Lux: "); Serial.println(lux);
-			}
+
+#ifdef TEMPHUMIDITY
+		if (tempGood) {
+			Serial.print("Temperature: "); Serial.print(temp); Serial.println(" F");
+		}
+		if (humidityGood) {
+			Serial.print("Humidity:    "); Serial.print(humidity); Serial.println(" %");
+		}
+#endif
+
+		if (luxGood) {
+			Serial.println();
+			Serial.print("Luminance:   "); Serial.println(lux);
 		}
 	}
 	
@@ -491,6 +620,8 @@ void loop()
 		mqttSendDoor();
 		doorChanged = 0;
 	}
+	
+	
 	
 #ifdef USEMQTT
 	// TODO: do we need mqttclient.loop() when we're not subscribed to anything?
