@@ -324,19 +324,33 @@ void webNotFound(AsyncWebServerRequest *request) {
 
 // mqtt publish update
 //
+// TODO: look at macaddr to send different topics based on primary/dev
+//       board
+//
 // TODO: add QoS to try to ensure send/resend on disconnectedness
 //
 #ifdef USEMQTT
 void mqttSendDoor() {
-		
+	// TODO: this is a calamity; I need to re-learn C++ string handling!
+	char sendTopic[64];
+	
+	strcpy(sendTopic, mqttDoorTopicDefault);  // default
+	
 	Serial.print("MQTT Connecting... ");
 	// TODO: embed macaddr in client identifier
 	if (mqttclient.connect("esp8266", mqttuser, mqttpass)) {
-		Serial.print(" sending ...");
-		if (mqttclient.publish(mqttdoortopic, doorState ? "ON" : "OFF")) {
-			Serial.println("... successfully sent.");
+		Serial.print(" sending ... ");
+		if (strcmp(macaddr, prodMac) == 0) {
+			strcpy(sendTopic, mqttDoorTopicProd);
 		}
-		else { Serial.println("... failed to send."); }
+		else if (strcmp(macaddr, devMac) == 0) {
+			strcpy(sendTopic, mqttDoorTopicDev);
+		}
+		Serial.print(sendTopic);
+		if (mqttclient.publish(sendTopic, doorState ? "ON" : "OFF")) {
+			Serial.println(" ... successfully sent.");
+		}
+		else { Serial.println(" ... failed to send."); }
 	}
 	else {
 		Serial.println("... failed to connect.");
