@@ -144,8 +144,8 @@ volatile boolean humidityGood = 0;
 #define PIRPIN undef
 
 
-// How often to show serial stats by default (in ms)
-#define statusFreq 60000
+// How often to update stats by default (in ms)
+#define statusFreq 20000
 
 
 
@@ -173,7 +173,7 @@ uint32_t delayLuminance = 1000;
 // re-trigger when millis() rolls over
 volatile int  doorState = 0;     // what the door state *IS*
 volatile int  doorChangeTo = 0;  // debounced future state
-volatile int  doorChanged = 0;   // 1 - use doorChangeTo
+volatile int  doorChanged = 0;   // 1 - doorChangeTo value is valid
 volatile unsigned long doorChangeAt = 0;  // millis() 
 
 // TODO: I'm starting to think that debouncing is causing more problems than
@@ -183,8 +183,8 @@ uint32_t delayDoorCheck = 2500;  // sanity check timer for debounce errors
 unsigned long lastDoorCheck = 0;
 
 
-// Used for serial output
-volatile int printNow = 0;
+// Flag to indicate stats changed, and should be updated immediately
+volatile int sendStatsNow = 0;
 
 // Timer to print serial output regardless of activity
 unsigned long lastSerial = 0;
@@ -227,11 +227,11 @@ PubSubClient mqttclient(mqttServer, mqttPort, mqttCallback, espClient);
 
 
 // Interrupt called on rising signal = just count them
-// TODO: squelch the first pulse every hour to quieten noise
+// TODO: squelch the first pulse every hour to quieten noise?
 
 void ICACHE_RAM_ATTR flowHandler()
 {
-	// count the pulse
+	// literally count the pulses; all logic is in loop()
 	pulses++;
 	
 }
@@ -239,24 +239,25 @@ void ICACHE_RAM_ATTR flowHandler()
 
 // Interrupt called on changing signal
 //
-// We "debounce" the input by noting the potential future state, along
-// with a timestamp at which we'll process.  By default, 50ms in the
-// future.
+// We "debounce" the input by noting the new state, flag that a change
+// happened, and set a counter so that we'll take a look 100ms in the future.
 //
-// If, at that point (handled in loop), our state actually changed then
-// we treat it as such.  We protect against sending notifications on
-// bounced door signals, as well as potentially receiving a bouncing
-// signal if the device is polled during this small time window.
+// If, at that future point in time, the state has changed, we process it
+// as such.  If it didn't, we can avoid sending spurious "no-op" updates.
+//
+// However, this falls short of being perfect - we can debounce incorrectly
+// leaving the door in the wrong state, so a separate check comes through 
+// to sanity check and correct.  Some of the problem may stem from interrupts
+// coming in while the logic is processing, changing the underlying variables.
+//
 
 void ICACHE_RAM_ATTR doorHandler()
 {
-	// save the new state in our "ChangeTo" variable
-	// Within loop() we watch for a change and apply it there if needed
-	doorChangeTo = digitalRead(DOORSENSORPIN);
 	doorChanged  = 1;
-	doorChangeAt = millis() + 50; 
-
+	doorChangeTo = digitalRead(DOORSENSORPIN);
+	doorChangeAt = millis() + 100;
 }
+
 
 
 
@@ -335,6 +336,7 @@ String processor(const String& var){
 	else if (var == "BUILDFILE") {
 		sprintf(buffer, __FILE__);
 	}
+	// Catch all for any unrecognized variable name
 	else {
 		sprintf(buffer, "-");
 	}  
@@ -352,7 +354,7 @@ String processor(const String& var){
 // - must be only single param.
 // - only name present, not value (note: /stat?FOO= will still work here)
 // - name must be <= 32 chars
-// - TODO: name must be only alpha (and uppercase it)
+// - TODO: name must be only uppercase alpha
 //
 void webStat(AsyncWebServerRequest *request) {
 	// Static error page; we overwrite this with a template string, or
@@ -363,10 +365,39 @@ void webStat(AsyncWebServerRequest *request) {
 	if (request->params() == 1  &&
 			request->getParam(0)->name().length() <= 32 &&
 			request->getParam(0)->value().length() == 0) {
-		sprintf(buff, "%%%s%%", request->getParam(0)->name().c_str());
+		// already checked len <= 32 so we can be less paranoid here
+		
+		// Read and save incoming name one time (buff64 is global)
+		sprintf(buff64, request->getParam(0)->name().c_str());
+		
+		// Copy chars over to buff to create literally:
+		//   PARAM => %PARAM%
+		//   PaRaM => %PARAM%
+		//   PA12M => %PAM%
+		//
+		int i = 0; int j = 1; char c;
+		buff[0] = '%';
+		
+		// so rudimentary, but avoid char encoding quirks
+		while ((c = buff64[i++]) != '\0' && i <= 32)
+			if (c >= 'A' && c <= 'Z') 
+				buff[j++] = c;
+			else if (c >= 'a' && c <= 'z')
+				buff[j++] = c - 32;
+			//else
+			//	break;
+		
+		// hackery: if all chars invalid, we turn what would 
+		// otherwise be "%%" into "%n%" for output uniformity
+		if (j == 1)
+			buff[j++] = 'n';
+		
+		buff[j] = '%';
+		buff[j+1]='\0';
+		
 	}
 	request->send_P(200, "text/plain", buff, processor);
-	
+	//Serial.println(buff); // debug
 }
 
 
@@ -390,13 +421,18 @@ void mqttSendDoor() {
 	Serial.print("MQTT Connecting for Door ... ");
 	
 	char buff[64];
+	char msg[10];
+	
+	sprintf(msg, "%s", doorState ? "ON" : "OFF");
+	
 	sprintf(buff, "esp8266-%s", macaddr);
 	if (mqttclient.connect(buff, mqttuser, mqttpass)) {
 		// reuse buffer
 		sprintf(buff, "ha/binary_sensor/%s/door/state", macaddr);
 		Serial.print("sending ... ");
-		if (mqttclient.publish(buff, doorState ? "ON" : "OFF", true)) {
-			Serial.println("successfully sent.");
+		if (mqttclient.publish(buff, msg, true)) {
+			Serial.print(msg);
+			Serial.println(" sent.");
 		}
 		else { Serial.println("failed to send."); }
 	}
@@ -406,33 +442,93 @@ void mqttSendDoor() {
 }
 
 
-// We always publish water pulses since whatever we send to (HA, etc)
-// is perfectly capable of doing it's own dividing by 450.  By sending
-// raw data, this will also, e.g., make it's way into something like
-// influxdb where we have a high precision view into small increments
-// that might indicate a small water leak, rather than hide them by 
-// rounding up into a more convenient 0.1L increment.
-
+// When polling for updates, we present data in various forms, such
+// as raw pulses, and pulses converted into liters.
+//
+// For mqtt push, we only send the raw pulse count.
+//
 void mqttSendFlow() {
 	
 	Serial.print("MQTT Connecting for Flow ... ");
 	
 	char buff[64];
-	char buff2[32];
+	char msg[32];
 	sprintf(buff, "esp8266-%s", macaddr);
-	sprintf(buff2, "%i", pulses);
+	sprintf(msg, "%i", pulses);
 	if (mqttclient.connect(buff, mqttuser, mqttpass)) {
 		// reuse buffer
 		sprintf(buff, "ha/sensor/%s/waterflow/state", macaddr);
 		Serial.print("sending ... ");
-		if (mqttclient.publish(buff, buff2, true)) {
-			Serial.println("successfully sent.");
+		if (mqttclient.publish(buff, msg, true)) {
+			Serial.print(msg);
+			Serial.println(" sent.");
 		}
 		else { Serial.println("failed to send."); }
 	}
 	else {
 		Serial.println("failed to connect.");
 	}
+}
+
+// Generic function to send all environment values
+// - temp, humidity, lux
+//
+void mqttSendEnviron() {
+
+	
+	Serial.print("MQTT Connecting for Environmental ... ");
+	
+	char buff[64];
+	char msg[32];
+	
+	sprintf(buff, "esp8266-%s", macaddr);
+	if (! mqttclient.connect(buff, mqttuser, mqttpass)) {
+		Serial.println("failed.");
+	}
+	else {
+		Serial.println("ok.");
+		
+		// send lux?
+		// TODO: make sure that luxPresent =0 always sets luxGood = 0
+		if (luxGood) {
+			sprintf(msg, "%0.2f", lux);
+			sprintf(buff, "ha/sensor/%s/luminance/state", macaddr);
+			Serial.print("Sending lux ... ");
+			
+			if (mqttclient.publish(buff, msg, true)) {
+				Serial.print(msg);
+				Serial.println(" sent.");
+			}
+			else { Serial.println("failed to send."); }
+		}
+		
+		if (tempGood) {
+			sprintf(msg, "%0.2f", temp);
+			sprintf(buff, "ha/sensor/%s/temperature/state", macaddr);
+			Serial.print("Sending temp ... ");
+			
+			if (mqttclient.publish(buff, msg, true)) {
+				Serial.print(msg);
+				Serial.println(" successfully sent.");
+			}
+			else { Serial.println("failed to send."); }
+		}
+		
+		if (humidityGood) {
+			sprintf(msg, "%0.2f", humidity);
+			sprintf(buff, "ha/sensor/%s/humidity/state", macaddr);
+			Serial.print("Sending humidity ... ");
+			
+			if (mqttclient.publish(buff, msg, true)) {
+				Serial.print(msg);
+				Serial.println(" successfully sent.");
+			}
+			else { Serial.println("failed to send."); }
+		}
+		
+	}
+	
+
 }
 
 
@@ -668,7 +764,7 @@ void loop()
 	// seconds read of doorState and if it is ever out of sync, report it to
 	// alert to debouncing errors -- an error case exists that if this section
 	// of code is interrupted by a door state change, behaviour may be unexpected.
-	if (doorChangeTo >= 0 && millis() >= doorChangeAt) {
+	if (doorChanged && millis() >= doorChangeAt) {
 		// did our debounce result in no change?
 		if (doorState == doorChangeTo) {
 			doorChanged = 0;
@@ -681,13 +777,8 @@ void loop()
 			// squelch a real future event
 			doorChanged = 0;
 			
-			// Process door change event - this is slow
-			Serial.print("Sending MQTT update for door: ");
-			Serial.println(doorState ? "ON" : "OFF");
-			mqttSendDoor();
-			
-			// hackery
-			mqttSendFlow();
+			// something changed - so send stats updates
+			sendStatsNow = 1;
 			
 		}
 	
@@ -703,8 +794,10 @@ void loop()
 			Serial.println("Sanity check failed - door debounce failed");
 			Serial.println("****");
 			doorState=doorCheck;
-			// call function instead of duplicating.
-			mqttSendDoor();
+			
+			// stats updates needed
+			sendStatsNow = 1;
+			
 		}
 	}
 	
@@ -721,8 +814,14 @@ void loop()
 			tempGood = 0;
 		}
 		else {
+			float lastT = temp;
 			temp = (event.temperature * 1.8) + 32;
 			tempGood = 1;
+			
+			// more than 1 degree change?
+			if (abs(temp - lastT) > 1) {
+				sendStatsNow = 1;
+			}
 		}
 		
 		// repeat for humidity
@@ -732,8 +831,16 @@ void loop()
 			humidityGood = 0;
 		}
 		else {
+			float lastH = humidity;
+			
 			humidity = event.relative_humidity;
 			humidityGood = 1;
+			
+			// more than 5 percent change?
+			if (abs(humidity - lastH) > 5) {
+				sendStatsNow = 1;
+			}
+
 		}
 	}
 
@@ -749,7 +856,15 @@ void loop()
 			luxPresent = 0;
 			luxGood = 0;
 		} else {
+			float lastL = lux;
+			
 			luxGood = 1;
+			
+			// more than 5 point change?
+			if (abs(lux - lastL) > 5) {
+				sendStatsNow = 1;
+			}
+
 		}
 		
 	}
@@ -762,34 +877,30 @@ void loop()
 	// TODO: print timestamp (clock time) on serial to better correlate with
 	// unexpected system crashes.
 	
-	// Print serial status when prompted, or every N milliseconds
-	if (printNow || millis() - lastSerial > statusFreq) {
-		lastSerial=millis();
-		printNow = 0;
+	// Update stats when prompted, or every N milliseconds
+	//
+	// TODO: separate flags to update stats for different measurements
+	// -- just because door opened doesn't mean we should push a temp update
+	if (sendStatsNow || millis() - lastSerial > statusFreq) {
+		if (sendStatsNow) {
+			Serial.println("sendStatsNow triggered update");
+		}
+		else {
+			Serial.println("Timer triggered update");
+		}
 		
-				Serial.println();
-		Serial.println(millis());
-		Serial.print("Door State: ");  Serial.println(doorState ? "OPEN" : "CLOSED");
-		Serial.print("Pulse count: "); Serial.println(pulses, DEC);
-		Serial.print("Liters: ");      Serial.println(pulses / (7.5 * 60.0));
-
-		if (tempGood) {
-			Serial.print("Temperature: "); Serial.print(temp); Serial.println(" F");
-		}
-		if (humidityGood) {
-			Serial.print("Humidity:    "); Serial.print(humidity); Serial.println(" %");
-		}
-
-		if (luxGood) {
-			Serial.println();
-			Serial.print("Luminance:   "); Serial.println(lux);
-		}
+		lastSerial=millis();
+		sendStatsNow = 0;
+		
+		// These will log their values to Serial, so no need to 
+		// print them specifically.
+		mqttSendDoor();
+		mqttSendFlow();
+		mqttSendEnviron();
+		
 	}
 	
 
-	
-	
-	
 	// TODO: do we need mqttclient.loop() when we're not subscribed to anything?
 	mqttclient.loop();
 
