@@ -144,8 +144,9 @@ volatile boolean humidityGood = 0;
 #define PIRPIN undef
 
 
-// How often to update stats by default (in ms)
-#define statusFreq 20000
+// Update stats this many ms, unless prompted to update sooner by the
+// sendStatsNow int
+#define statusFreq 60000
 
 
 
@@ -819,7 +820,7 @@ void loop()
 			tempGood = 1;
 			
 			// more than 1 degree change?
-			if (abs(temp - lastT) > 1) {
+			if (abs(temp - lastT) > 1.0) {
 				sendStatsNow = 1;
 			}
 		}
@@ -837,7 +838,7 @@ void loop()
 			humidityGood = 1;
 			
 			// more than 5 percent change?
-			if (abs(humidity - lastH) > 5) {
+			if (abs(humidity - lastH) > 5.0) {
 				sendStatsNow = 1;
 			}
 
@@ -848,6 +849,8 @@ void loop()
 	// Note: trying to readLux() with the board absent will cause
 	// the entire platform to crash.  So only poll if it's there
 	if (millis() - lastLuminance > delayLuminance && luxPresent) {
+		float lastL = lux;
+		
 		lastLuminance = millis();
 		lux = veml.readLux();
 		
@@ -856,17 +859,14 @@ void loop()
 			luxPresent = 0;
 			luxGood = 0;
 		} else {
-			float lastL = lux;
-			
-			luxGood = 1;
-			
 			// more than 5 point change?
-			if (abs(lux - lastL) > 5) {
+			if (abs(lux - lastL) > 5.0) {
 				sendStatsNow = 1;
 			}
-
+			
+			luxGood = 1;
 		}
-		
+
 	}
 	
 	
@@ -881,7 +881,9 @@ void loop()
 	//
 	// TODO: separate flags to update stats for different measurements
 	// -- just because door opened doesn't mean we should push a temp update
+	//
 	if (sendStatsNow || millis() - lastSerial > statusFreq) {
+		Serial.println("");
 		if (sendStatsNow) {
 			Serial.println("sendStatsNow triggered update");
 		}
