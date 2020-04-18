@@ -3,14 +3,13 @@
   Arduino sketch to drive the ESP8266 in our the crawlspace
 
   Inputs:
-  * water flow sensor
-  * door/window sensor(s)
-  * others to follow (PIR / temp / humidity etc)
+  * various sensors
+  * 
 
   Outputs:
-  * Initially - copy water flow sensor to onboard LED
-  * Publish to serial output for diagnostics
+  * Publish stats serial output for diagnostics
   * Publish to MQTT topics for integration with home assistant
+  * Publish JSON over web interface for polling data / monitoring
 
   Future:
   * Create queue in SPIFFS to handle periods of disconnectedness
@@ -18,19 +17,16 @@
 
   Developed for:
   * https://www.adafruit.com/product/2821  feather huzzah
+  * https://www.adafruit.com/product/375   door/window sensor
   * https://www.adafruit.com/product/828   water flow sensor
-            For this sensor: Liters = Pulses / (7.5 * 60)
+            For this sensor: Liters = Pulses / 450
   * https://www.adafruit.com/product/4162  light sensor
-  * https://www.adafruit.com/product/375   door/window sensor  
-
+  * https://www.adafruit.com/product/385   temp/humidity sensor
+  
   Future:
   * https://www.adafruit.com/product/189   PIR sensor
-  * https://www.adafruit.com/product/385   Temp/humidity sensor
 
 
-
-  Setup diags LED
-  * None - use the onboard LED
 
   Setup water flow sensor
   * Connect red to +V
@@ -66,6 +62,7 @@
   * Split .ino into multiple files for management - http://www.gammon.com.au/forum/?id=12625
   * OTA updates
   * Test against cheaper lux sensor (Candidate: MAX44009)
+  * Add GPIO extender via i2c to open more pins for use.
   * Add code for PIR sensor
   * Push mqtt event on water starting to flow -- permit polling to
        be less frequent, but still be alerted immediately on change.
@@ -74,13 +71,15 @@
     * report spot-luminance -- i.e. absolute last value
     * report high-lum -- highest it's been in the past minute/15m/30m/...
     * report low-lum  -- lowest it's been in the same period
-  * 
+  * Add thresholds for lux, temp, humidity -- if it varies more than X units
+       since the last update, then send a new MQTT message with the value.
+  * ...
 
 
 **********************************************************/
 
 
-
+#define VERSION "0.5.1"
 
 
 #include <ESP8266WiFi.h>
@@ -101,41 +100,38 @@
 #include "favicon_ico.h"
 
 
+
+
 // Temp/Humidity stuff - based on sample sketch
 //   https://learn.adafruit.com/dht/overview
 //
 // In development I had some issues with sensors interacting with
 // each other, so this is here to easily turn off/on separate sections.
 //
-#ifdef TEMPHUMIDITY
 
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
 #include <DHT_U.h>
 
-#define DHTPIN 12     // Digital pin connected to the DHT sensor 
+// per docs, must be one of 3, 4, 5, 12, 13 or 14
+// can be on #15 but must be disconnected during programming
+// + from observation, *can* be on 2 if gnd is disconnected at boot
+#define DHTPIN 12
 #define DHTTYPE DHT22
 
 DHT_Unified dht(DHTPIN, DHTTYPE);
-uint32_t delayTempHumidity;
+boolean dhtPresent = 1;   // assume hardware present, unless fails to init
 
-#endif
+uint32_t delayTempHumidity;       // delay between re-reading value
 
-// these vars outside the IFDEF since ..Good will stay bad and not print
+
 volatile float temp = 0.0;
-volatile boolean tempGood = 0;  // not good before first reading
+volatile boolean tempGood = 0;    // value is not good before first reading
 volatile float humidity = 0.0;
 volatile boolean humidityGood = 0;
 
 
 
-
-// Use built-in LED for flash/output (not yet used)
-const int led = LED_BUILTIN;
-
-
-// read MAC address once and save it
-char macaddr[32] = "";
 
 // Which pin for flow sensor input
 #define FLOWSENSORPIN 13
@@ -144,17 +140,23 @@ char macaddr[32] = "";
 #define DOORSENSORPIN 14
 
 
+// Future: PIR will just use a regular data pin
+#define PIRPIN undef
+
+
 // How often to show serial stats by default (in ms)
 #define statusFreq 60000
 
-// Print stats based on volume of water flow
-// At 450 pulses per liter, a value of 45 means print every 0.1 l
-#define flowFreq 45
 
 
 // vars changed by interrupt need to be marked "volatile" so 
 // as to not be optimized out by the compiler
 volatile unsigned long pulses = 0;
+
+volatile unsigned long lastFlow = 0; // timestamp of last flow update
+uint32_t flowFreq = 5000;       // send flow updates no more than x ms.
+
+
 
 // VEML7700 produces actual lux value
 // if we fail to initialize, we just disable the sensor
@@ -166,8 +168,20 @@ volatile boolean luxGood = 0;
 volatile float lux = 0.0;
 uint32_t delayLuminance = 1000;
 
-volatile int doorState = 0;
-volatile int doorChanged = 0;
+
+// we need separate doorChangeTo and doorChanged so that we don't
+// re-trigger when millis() rolls over
+volatile int  doorState = 0;     // what the door state *IS*
+volatile int  doorChangeTo = 0;  // debounced future state
+volatile int  doorChanged = 0;   // 1 - use doorChangeTo
+volatile unsigned long doorChangeAt = 0;  // millis() 
+
+// TODO: I'm starting to think that debouncing is causing more problems than
+// it's solving.  Might be worth taking it back out and just sending jittery
+// updates, or being sure to use better switches.
+uint32_t delayDoorCheck = 2500;  // sanity check timer for debounce errors
+unsigned long lastDoorCheck = 0;
+
 
 // Used for serial output
 volatile int printNow = 0;
@@ -176,9 +190,22 @@ volatile int printNow = 0;
 unsigned long lastSerial = 0;
 
 // Timer to capture last poll of sensors
+// Set to 30s to avoid polling for 30s after booting -- the humidity 
+// sensor in particular seems to take a few seconds to settle down
+// so this might help avoid some fluctuations.
+
 // TODO: sanity check for millis() rolling over
-unsigned long lastTempHumidity = 0;
-unsigned long lastLuminance = 0;
+unsigned long lastTempHumidity = 30000;
+unsigned long lastLuminance = 30000;
+
+
+
+
+// read MAC address once and save it.  12 hex chars
+char macaddr[15] = "";
+
+char buff64[64] = "";  // general use global -- TODO: remove me
+
 
 
 
@@ -193,33 +220,42 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 AsyncWebServer server(80);
 
 // Create MQTT Client
-#ifdef USEMQTT
 WiFiClient espClient;
 PubSubClient mqttclient(mqttServer, mqttPort, mqttCallback, espClient);
 
-// TODO: this is a calamity; I need to re-learn C++ string handling!
-char mqttSendTopic[128];
-
-#endif
 
 
 
 // Interrupt called on rising signal = just count them
+// TODO: squelch the first pulse every hour to quieten noise
+
 void ICACHE_RAM_ATTR flowHandler()
 {
+	// count the pulse
 	pulses++;
-	if (pulses % flowFreq == 0) { printNow = 1; }
 	
 }
 
 
-// Interrupt called on changing signal = note sensor changed
-// TODO: debounce input
+// Interrupt called on changing signal
+//
+// We "debounce" the input by noting the potential future state, along
+// with a timestamp at which we'll process.  By default, 50ms in the
+// future.
+//
+// If, at that point (handled in loop), our state actually changed then
+// we treat it as such.  We protect against sending notifications on
+// bounced door signals, as well as potentially receiving a bouncing
+// signal if the device is polled during this small time window.
+
 void ICACHE_RAM_ATTR doorHandler()
 {
-	doorState = digitalRead(DOORSENSORPIN);
-	doorChanged = 1;
-	printNow = 1;
+	// save the new state in our "ChangeTo" variable
+	// Within loop() we watch for a change and apply it there if needed
+	doorChangeTo = digitalRead(DOORSENSORPIN);
+	doorChanged  = 1;
+	doorChangeAt = millis() + 50; 
+
 }
 
 
@@ -243,7 +279,7 @@ String processor(const String& var){
 		
 		// > 1 day
 		if (m > (1000 * 60 * 60 * 24)) {
-			sprintf(buffer, "%0d day%s, %02d:%02ds",
+			sprintf(buffer, "%0d day%s, %02d:%02dm",
 				(int) (m / (1000 * 60 * 60 * 24)),
 				(m >= (2 * 1000 * 60 * 60 * 24) ? "s" : ""),  // plural?
 				(int) (m / (1000 * 60 * 60) % 24),
@@ -261,8 +297,8 @@ String processor(const String& var){
 				(int) (m / (1000 * 60) % 60),
 				(int) (m / 1000 % 60));
 		}
-	
 	}
+	// TODO: since these are String(), can they be in a case statement for easier reading?
 	else if (var == "WATERFLOW") {
 		sprintf(buffer, "%.2f", pulses / 450.0);
 	}
@@ -283,6 +319,21 @@ String processor(const String& var){
 	}
 	else if (var == "MACADDR") {
 		sprintf(buffer, macaddr);
+	}
+	
+	// future use for a config.json type entry.
+	// also want to capture build time (USEMQTT etc) vars
+	else if (var == "VERSION") {
+		sprintf(buffer, VERSION);
+	}
+	else if (var == "BUILDDATE") {
+		sprintf(buffer, __DATE__);
+	}
+	else if (var == "BUILDTIME") {
+		sprintf(buffer, __TIME__);
+	}
+	else if (var == "BUILDFILE") {
+		sprintf(buffer, __FILE__);
 	}
 	else {
 		sprintf(buffer, "-");
@@ -329,21 +380,22 @@ void webNotFound(AsyncWebServerRequest *request) {
 
 // mqtt publish update
 //
-// TODO: look at macaddr to send different topics based on primary/dev
-//       board
-//
 // TODO: add QoS to try to ensure send/resend on disconnectedness
 //
-#ifdef USEMQTT
+// We always send "retain: true" with messages; the last seen state
+// will be an appropriate value to use if a system restarts
+//
 void mqttSendDoor() {
 	
-	Serial.print("MQTT Connecting... ");
+	Serial.print("MQTT Connecting for Door ... ");
 	
-	// TODO: embed macaddr in client identifier
-	if (mqttclient.connect("esp8266", mqttuser, mqttpass)) {
+	char buff[64];
+	sprintf(buff, "esp8266-%s", macaddr);
+	if (mqttclient.connect(buff, mqttuser, mqttpass)) {
+		// reuse buffer
+		sprintf(buff, "ha/binary_sensor/%s/door/state", macaddr);
 		Serial.print("sending ... ");
-		
-		if (mqttclient.publish(mqttSendTopic, doorState ? "ON" : "OFF")) {
+		if (mqttclient.publish(buff, doorState ? "ON" : "OFF", true)) {
 			Serial.println("successfully sent.");
 		}
 		else { Serial.println("failed to send."); }
@@ -352,11 +404,37 @@ void mqttSendDoor() {
 		Serial.println("failed to connect.");
 	}
 }
-#else
-void mqttSendDoor() {
-	return;
+
+
+// We always publish water pulses since whatever we send to (HA, etc)
+// is perfectly capable of doing it's own dividing by 450.  By sending
+// raw data, this will also, e.g., make it's way into something like
+// influxdb where we have a high precision view into small increments
+// that might indicate a small water leak, rather than hide them by 
+// rounding up into a more convenient 0.1L increment.
+
+void mqttSendFlow() {
+	
+	Serial.print("MQTT Connecting for Flow ... ");
+	
+	char buff[64];
+	char buff2[32];
+	sprintf(buff, "esp8266-%s", macaddr);
+	sprintf(buff2, "%i", pulses);
+	if (mqttclient.connect(buff, mqttuser, mqttpass)) {
+		// reuse buffer
+		sprintf(buff, "ha/sensor/%s/waterflow/state", macaddr);
+		Serial.print("sending ... ");
+		if (mqttclient.publish(buff, buff2, true)) {
+			Serial.println("successfully sent.");
+		}
+		else { Serial.println("failed to send."); }
+	}
+	else {
+		Serial.println("failed to connect.");
+	}
 }
-#endif
+
 
 
 void setup() {
@@ -367,42 +445,58 @@ void setup() {
 
 
 
-#ifdef TEMPHUMIDITY
-  // Initialize device.
-  dht.begin();
-  // Print temperature sensor details.
-  sensor_t sensor;
-  dht.temperature().getSensor(&sensor);
-  Serial.println(F("------------------------------------"));
-  Serial.println(F("Temperature Sensor"));
-  Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
-  Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
-  Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
-  Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("°C"));
-  Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("°C"));
-  Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("°C"));
-  Serial.println(F("------------------------------------"));
-  // Print humidity sensor details.
-  dht.humidity().getSensor(&sensor);
-  Serial.println(F("Humidity Sensor"));
-  Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
-  Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
-  Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
-  Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("%"));
-  Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("%"));
-  Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("%"));
-  Serial.println(F("------------------------------------"));
-  // Set delay between sensor readings based on sensor details.
-  Serial.print  (F("Min Delay:   ")); Serial.println(sensor.min_delay);
-  Serial.println(F("------------------------------------"));
-  delayTempHumidity = sensor.min_delay / 1000;   // given in us; convert to ms.
+	// Initialize device.
+	dht.begin();
+	// Print temperature sensor details.
+	sensor_t sensor;
+	dht.temperature().getSensor(&sensor);
+ 
+	// Try to read a value (== determine if it's present)
+	sensors_event_t event;
+	dht.temperature().getEvent(&event);
+	if (isnan(event.temperature)) {
+		Serial.println("Reading from temperature sensor failed; disabling.");
+		dhtPresent = 0;  // disable future checks
+	}
+	else {
+		// throw away the result; we'll read it again in loop()
 
-  // From observation on the DHT22 this is 2000ms.  We'll poll slower.
-  delayTempHumidity = 5000;
-  
-#endif
-
-
+		// NOTE the F() macro pushes these strings into flash, not ram to save
+		// working space.  See https://www.arduino.cc/reference/en/language/variables/utilities/progmem/
+		//
+		// These values are all generic values for the DHT22 device, and are not read from 
+		// the sensor itself.
+		Serial.println(F("------------------------------------"));
+		Serial.println(F("Temperature Sensor"));
+		Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
+		//Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
+		//Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
+		Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("°C"));
+		Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("°C"));
+		Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("°C"));
+		Serial.println(F("------------------------------------"));
+		// Print humidity sensor details.
+		dht.humidity().getSensor(&sensor);
+		Serial.println(F("Humidity Sensor"));
+		Serial.print  (F("Sensor Type: ")); Serial.println(sensor.name);
+		//Serial.print  (F("Driver Ver:  ")); Serial.println(sensor.version);
+		//Serial.print  (F("Unique ID:   ")); Serial.println(sensor.sensor_id);
+		Serial.print  (F("Max Value:   ")); Serial.print(sensor.max_value); Serial.println(F("%"));
+		Serial.print  (F("Min Value:   ")); Serial.print(sensor.min_value); Serial.println(F("%"));
+		Serial.print  (F("Resolution:  ")); Serial.print(sensor.resolution); Serial.println(F("%"));
+		
+		Serial.println(F("------------------------------------"));
+		// Set delay between sensor readings based on sensor details.
+		Serial.print  (F("Min Delay:   ")); Serial.println(sensor.min_delay);
+		Serial.println(F("------------------------------------"));
+		
+		// From observation on the DHT22 this is 2000ms, but we will poll slower.
+		delayTempHumidity = 5000;
+	
+	
+	}
+	
+	
 	// Setup VEML7700 lux sensor
 	// TODO: in testing, if I unplug the lux sensor it starts
 	// giving unreasonably high readings.  If we see this, we can
@@ -436,9 +530,11 @@ void setup() {
 		
 		//veml.powerSaveEnable(true);
 		//veml.setPowerSaveMode(VEML7700_POWERSAVE_MODE4);
-		veml.setLowThreshold(10000);
-		veml.setHighThreshold(20000);
-		veml.interruptEnable(true);
+		
+		// Disabling these - we just poll; don't need interrupts on thresholds
+		//veml.setLowThreshold(10000);
+		//veml.setHighThreshold(20000);
+		//veml.interruptEnable(true);
 	
 	} // setup lux
 
@@ -462,10 +558,14 @@ void setup() {
 	server.on("/flow.json", HTTP_GET, [](AsyncWebServerRequest *request){
 		request->send_P(200, "text/json", flow_json, processor);
 	});
+	
+	server.on("/config.json", HTTP_GET, [](AsyncWebServerRequest *request){
+		request->send_P(200, "text/json", config_json, processor);
+	});
 
 
-	
-	
+
+
 	//// Examples with SPIFFS to read a data file from flash, with/without processing
 	// 
 	//server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -488,6 +588,10 @@ void setup() {
 
 	// Other handlers
 	server.on("/stat", HTTP_GET, webStat);
+	
+	// TODO: add handler to self-reboot (e.g. restart a sensor)
+	
+	// otherwise, 404
 	server.onNotFound(webNotFound);
 	
 	
@@ -499,24 +603,22 @@ void setup() {
   
 	Serial.println("Setting input/output pin parameters.");
 
-	// onboard LED pin is for output
-	pinMode(LED_BUILTIN, OUTPUT);
 
-	// door sensors need pullup; read initial value
+	// Door Sensor pin
+	// simple switch between input pin and ground = needs internal pullup
+	// read initial value; attach interrupt for any change in state
 	pinMode(DOORSENSORPIN, INPUT_PULLUP);
 	doorState = digitalRead(DOORSENSORPIN);
-	
-	// Flow sensor is for input - no pullup needed
-	pinMode(FLOWSENSORPIN, INPUT);
-
-
-
-	Serial.println("Setting interrupts.");
-	// Set interrupts on rising signal for flow meter
-	attachInterrupt(FLOWSENSORPIN, flowHandler, RISING);
-	
-	// Set interrupt for any signal change for door sensor
 	attachInterrupt(DOORSENSORPIN, doorHandler, CHANGE);
+
+
+	// Flow Sensor pin
+	// purely input, no pullup needed; set interrupt for rising change only
+	pinMode(FLOWSENSORPIN, INPUT);
+	attachInterrupt(FLOWSENSORPIN, flowHandler, RISING);
+
+
+
 
 
 	Serial.println("Connecting to wifi ....");
@@ -535,32 +637,22 @@ void setup() {
 	Serial.println(WiFi.localIP());
 
 	// Read and save mac address one time since it won't change
-	sprintf(macaddr, WiFi.macAddress().c_str());
+	sprintf(buff64, WiFi.macAddress().c_str());
+	int i = 0; int j = 0; char c;
+	while ((c = buff64[i++]) != '\0' && j <= 12)
+		if (isalnum(c)) 
+			macaddr[j++] = c;
+	macaddr[j] = '\0';
+	
+	
 	Serial.print("MAC address: ");
 	Serial.println(macaddr);
 
-
-#ifdef USEMQTT
-	// Hackery -- configure the mqttSendTopic based on local MAC addr
-	if (strcmp(macaddr, prodMac) == 0) {
-		strcpy(mqttSendTopic, mqttDoorTopicProd);
-	}
-	else if (strcmp(macaddr, devMac) == 0) {
-		strcpy(mqttSendTopic, mqttDoorTopicDev);
-	}
-	else {
-		strcpy(mqttSendTopic, mqttDoorTopicDefault);  // default
-	}
-	
-	Serial.print("Using mqtt door topic: ");
-	Serial.println(mqttSendTopic);
-
-
-	// Connect to MQTT for initial update 
-	Serial.println("Connecting to MQTT server: ");
+	// Connect to MQTT for initial updates 
+	Serial.println("Connecting to MQTT server for initial updates: ");
 	mqttSendDoor();
-#endif
-	
+	mqttSendFlow();
+
 }
 
 
@@ -569,14 +661,63 @@ void setup() {
 void loop()
 {
 
-#ifdef TEMPHUMIDITY
+	// Process a debounced door change; if it's time to process and an actual
+	// change happened.
+	//
+	// TODO: This seems to debounce adequately.  We might also have a every few
+	// seconds read of doorState and if it is ever out of sync, report it to
+	// alert to debouncing errors -- an error case exists that if this section
+	// of code is interrupted by a door state change, behaviour may be unexpected.
+	if (doorChangeTo >= 0 && millis() >= doorChangeAt) {
+		// did our debounce result in no change?
+		if (doorState == doorChangeTo) {
+			doorChanged = 0;
+		}
+		else {
+			doorState = doorChangeTo;
+			
+			// Mark "changed" to off immediately.  Otherwise, the mqtt 
+			// calls further may take many ms and cause the debounce to
+			// squelch a real future event
+			doorChanged = 0;
+			
+			// Process door change event - this is slow
+			Serial.print("Sending MQTT update for door: ");
+			Serial.println(doorState ? "ON" : "OFF");
+			mqttSendDoor();
+			
+			// hackery
+			mqttSendFlow();
+			
+		}
+	
+	}
+	
+	
+	// Sanity check
+	if (millis() - lastDoorCheck > delayDoorCheck) {
+		lastDoorCheck = millis();
+		int doorCheck = digitalRead(DOORSENSORPIN);
+		if (doorCheck != doorState) {
+			Serial.println("****");
+			Serial.println("Sanity check failed - door debounce failed");
+			Serial.println("****");
+			doorState=doorCheck;
+			// call function instead of duplicating.
+			mqttSendDoor();
+		}
+	}
+	
+		
 	// refresh sensors, avoiding refreshing "too often"
-	if (millis() - lastTempHumidity > delayTempHumidity) {
+	if (millis() - lastTempHumidity > delayTempHumidity && dhtPresent) {
 		lastTempHumidity = millis();
 		
 		sensors_event_t event;
 		dht.temperature().getEvent(&event);
 		if (isnan(event.temperature)) {
+			// TODO: on too many failures, disable future reads (dhtPresent = 0)
+			// Serial.println("Reading temp failed; disabling");
 			tempGood = 0;
 		}
 		else {
@@ -587,6 +728,7 @@ void loop()
 		// repeat for humidity
 		dht.humidity().getEvent(&event);
 		if (isnan(event.relative_humidity)) {
+			// Serial.println("Reading humidity failed; disabling");
 			humidityGood = 0;
 		}
 		else {
@@ -594,17 +736,17 @@ void loop()
 			humidityGood = 1;
 		}
 	}
-#endif
 
 
 	// Note: trying to readLux() with the board absent will cause
-	// the entire platform to crash.
+	// the entire platform to crash.  So only poll if it's there
 	if (millis() - lastLuminance > delayLuminance && luxPresent) {
 		lastLuminance = millis();
 		lux = veml.readLux();
 		
 		if (lux == 989560448.00) {   // from observation
 			Serial.println("Lux sensor out of range - disabling");
+			luxPresent = 0;
 			luxGood = 0;
 		} else {
 			luxGood = 1;
@@ -631,14 +773,12 @@ void loop()
 		Serial.print("Pulse count: "); Serial.println(pulses, DEC);
 		Serial.print("Liters: ");      Serial.println(pulses / (7.5 * 60.0));
 
-#ifdef TEMPHUMIDITY
 		if (tempGood) {
 			Serial.print("Temperature: "); Serial.print(temp); Serial.println(" F");
 		}
 		if (humidityGood) {
 			Serial.print("Humidity:    "); Serial.print(humidity); Serial.println(" %");
 		}
-#endif
 
 		if (luxGood) {
 			Serial.println();
@@ -647,20 +787,11 @@ void loop()
 	}
 	
 
-	// if door status changed - send update
-	if (doorChanged) {
-		Serial.print("Sending MQTT update for door: ");
-		Serial.println(doorState ? "ON" : "OFF");
-		mqttSendDoor();
-		doorChanged = 0;
-	}
 	
 	
 	
-#ifdef USEMQTT
 	// TODO: do we need mqttclient.loop() when we're not subscribed to anything?
 	mqttclient.loop();
-#endif
 
 	yield();  // or delay(0);
   

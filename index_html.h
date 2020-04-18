@@ -39,6 +39,16 @@ h1 {
     <sup class="units">L</sup>
   </p>
   <p>
+    <span class="sensor-labels">Temperature:</span>
+    <span id="temperature">%TEMPERATURE%</span>
+    <sup class="units">F</sup>
+  </p>
+  <p>
+    <span class="sensor-labels">Humidity:</span>
+    <span id="humidity">%HUMIDITY%</span>
+    <sup class="units">%</sup>
+  </p>
+  <p>
     <span class="sensor-labels">Luminance:</span>
     <span id="luminance">%LUMINANCE%</span>
     <sup class="units">lux</sup>
@@ -63,6 +73,28 @@ h1 {
       }
     };
     xhttp.open("GET", "/stat?WATERFLOW", true);
+    xhttp.send();
+  }, 10000 ) ;
+
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4) {
+        document.getElementById("temperature").innerHTML = (this.status == 200 ? this.responseText : "-");
+      }
+    };
+    xhttp.open("GET", "/stat?TEMPERATURE", true);
+    xhttp.send();
+  }, 10000 ) ;
+
+  setInterval(function ( ) {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4) {
+        document.getElementById("humidity").innerHTML = (this.status == 200 ? this.responseText : "-");
+      }
+    };
+    xhttp.open("GET", "/stat?HUMIDITY", true);
     xhttp.send();
   }, 10000 ) ;
 

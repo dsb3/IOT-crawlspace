@@ -13,6 +13,7 @@ const char* all_json = R"({
   
   "flowstats": {
     "future-stuff": "in-here",
+    "flowformin": "%FLOWFORMIN%",
     "minute": "%FLOWMINUTE%",
     "hour": "%FLOWHOUR%",
     "day": "%FLOWDAY%"
@@ -22,8 +23,12 @@ const char* all_json = R"({
 
   "luxstats": {
     "future-stuff": "in-here",
-    "luxhighmin": "%LUXHIGHMIN%",
-    "luxlowmin":  "%LUXLOWMIN%"
+    "luxhighonemin":     "%LUXHIGHONEMIN%",
+    "luxhighfivemin":    "%LUXHIGHFIVEMIN%",
+    "luxhighfifteenmin": "%LUXHIGHFIFTEENMIN%",
+    "luxlowonemin":      "%LUXLOWONEMIN%",
+    "luxlowfivemin":     "%LUXLOWFIVEMIN%",
+    "luxlowfifteenmin":  "%LUXLOWFIFTEENMIN%"
   },
 
   "temperature": "%TEMPERATURE%",
@@ -46,3 +51,52 @@ const char* flow_json = R"({
   "millis": "%MILLIS%"
 }
 )";
+
+
+const char* config_json = R"({
+  "__file__": "__FILE__",
+  "__date__": "__DATE__",
+  "__time__": "__TIME__",
+  "author":   "%AUTHOR%",
+  "version":  "%VERSION%",
+
+  "waterflow": {
+    "enabled":   "%FLOWENABLED%",
+    "pulseperl": "%FLOWPERL%"
+  }
+
+  "temperature": {
+    "enabled": "%TEMPENABLED%",
+    "present": "%TEMPPRESENT%"
+  },
+  
+  "luminance": {
+    "enabled": "%LUXENABLED%",
+    "present": "%LUXPRESENT%"
+  },
+  
+  "doors": {
+    "enabled": "%DOORENABLED%",
+    "count":   "%DOORCOUNT%"
+  }
+  
+  "network": {
+    "OTA": "false",
+    
+    "mqtt": {
+      "enabled": "...",
+      "active":  "...",
+      "hostname": "%MQTTHOST%"
+    },
+
+    "ntp": {
+      "enabled": "...",
+      "active":  "...",
+      "stats": "..., ..."
+    }
+  },
+  
+  "millis": "%MILLIS%"
+}
+)";
+
