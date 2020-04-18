@@ -183,10 +183,6 @@ uint32_t doorForceFreq = 900000; // force door refresh this often
 #define PIRPIN undef
 
 
-// Update stats this many ms, unless prompted to update sooner by the
-// sendStatsNow int
-#define statusFreq 60000
-
 
 
 // vars changed by interrupt need to be marked "volatile" so 
@@ -213,6 +209,14 @@ volatile float lux = 0.0;
 uint32_t delayLuminance = 1000;    // read value every second
 
 
+// Update environmental stats this many ms, unless prompted to update sooner
+uint32_t envFreq = 2500;          // when environmentals are changing, send this often
+uint32_t envForceFreq = 60000;    // force an update this often, even if not changing
+
+unsigned long lastEnvTime = 0;    // timestamp of last env update
+int sendEnvNow = 0;               // env stats changed, and should be sent asap
+
+
 // we need separate doorChangeTo and doorChanged so that we don't
 // re-trigger when millis() rolls over
 volatile int  doorState = 0;     // what the door state *IS*
@@ -227,11 +231,6 @@ uint32_t delayDoorCheck = 2500;  // sanity check timer for debounce errors
 unsigned long lastDoorCheck = 0;
 
 
-// Flag to indicate stats changed, and should be updated immediately
-volatile int sendStatsNow = 0;
-
-// Timer to print serial output regardless of activity
-unsigned long lastSerial = 0;
 
 // Timer to capture last poll of sensors
 // Set to 30s to avoid polling for 30s after booting -- the humidity 
@@ -873,7 +872,7 @@ void loop()
 			
 			// more than 1 degree change?
 			if (abs(temp - lastT) > 1.0) {
-				sendStatsNow = 1;
+				sendEnvNow = 1;
 			}
 		}
 		
@@ -891,7 +890,7 @@ void loop()
 			
 			// more than 5 percent change?
 			if (abs(humidity - lastH) > 5.0) {
-				sendStatsNow = 1;
+				sendEnvNow = 1;
 			}
 
 		}
@@ -913,7 +912,7 @@ void loop()
 		} else {
 			// more than 5 point change?
 			if (abs(lux - lastL) > 5.0) {
-				sendStatsNow = 1;
+				sendEnvNow = 1;
 			}
 			
 			luxGood = 1;
@@ -932,6 +931,7 @@ void loop()
 	}
 	
 	
+	
 	// TODO: deprecate serial output.
 	// TODO: print timestamp (clock time) on serial to better correlate with
 	// unexpected system crashes.
@@ -942,18 +942,11 @@ void loop()
 	// -- just because door opened doesn't mean we should push a temp update
 	// -- ^ this is done; now need to split out temp/humid/lux to separate updates
 	//
-	if (sendStatsNow || millis() - lastSerial > statusFreq) {
-		Serial.println("");
-		if (sendStatsNow) {
-			Serial.println("sendStatsNow triggered update");
-		}
-		else {
-			Serial.println("Timer triggered update");
-		}
+	if ( ( sendEnvNow && millis() - lastEnvTime > envFreq) ||
+	     ( millis() - lastEnvTime > envForceFreq) ) {
 		
-		lastSerial=millis();
-		sendStatsNow = 0;
-		
+		lastEnvTime=millis();
+		sendEnvNow = 0;
 		
 		mqttSendEnviron();
 		
