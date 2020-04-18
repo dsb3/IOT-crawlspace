@@ -40,7 +40,7 @@
  
   Setup first door sensor
   * Connect one end to common ground
-  * Connect other to input pin #14 (use internal pullup)
+  * Connect other to input pin #14 (uses internal pullup)
 
   Setup DHT22 temp/humidity sensor
   * Connect to +v, gnd (docs say it might need 5v, but 3.3v tests fine)
@@ -71,28 +71,28 @@
     * report spot-luminance -- i.e. absolute last value
     * report high-lum -- highest it's been in the past minute/15m/30m/...
     * report low-lum  -- lowest it's been in the same period
-  * Add thresholds for lux, temp, humidity -- if it varies more than X units
-       since the last update, then send a new MQTT message with the value.
-  * ...
+  *
 
 
 **********************************************************/
 
 
-#define VERSION "0.5.1"
+#define VERSION "0.6.0"
+
+
+// Private config held in separate file
+// const char* ssid = "SSID";
+// const char* password = "password";
+#include "private-config.h"
 
 
 #include <ESP8266WiFi.h>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 
-// MQTT client
-#include <PubSubClient.h>
+// save macaddr during setup()
+char macaddr[15] = "";
 
-// Config held in separate file
-// const char* ssid = "SSID";
-// const char* password = "password";
-#include "private-config.h"
 
 // static webserver content (avoids SPIFFS overhead for now)
 #include "index_html.h"
@@ -102,11 +102,46 @@
 
 
 
+
+
+
+
+// MQTT client
+// MQTT topics are created to be suitable for use with mqtt autodiscovery
+// even though we don't yet expect to use that feature.
+//
+// For auto-discovery:
+//   <discovery_prefix>/<component>/[<node_id>/]<object_id>/config
+//
+//   ha/binary_sensor/[MAC]/door/state
+//   ha/sensor/[MAC]/waterflow/state
+//   etc
+//
+//   MAC is 12 hex chars only (colons removed)
+//
+//   TODO: consider JSON data sets for combined elements like
+//    temp+humidity, or lux + historic lux
+//
+
+#include <PubSubClient.h>
+
+// * these must be defined in private-config.h 
+//const char* mqttServer = "mqtt.example.com";
+//const int   mqttPort = 1883;
+//const char* mqttuser = "username";
+//const char* mqttpass = "password";
+
+// generate and save during setup()
+char mqttIdent[64] = "";
+
+
+
+
+
+
+
 // Temp/Humidity stuff - based on sample sketch
 //   https://learn.adafruit.com/dht/overview
-//
-// In development I had some issues with sensors interacting with
-// each other, so this is here to easily turn off/on separate sections.
 //
 
 #include <Adafruit_Sensor.h>
@@ -120,7 +155,8 @@
 #define DHTTYPE DHT22
 
 DHT_Unified dht(DHTPIN, DHTTYPE);
-boolean dhtPresent = 1;   // assume hardware present, unless fails to init
+boolean dhtPresent = 0;   // assume hardware present, unless fails to init
+
 
 uint32_t delayTempHumidity;       // delay between re-reading value
 
@@ -139,6 +175,9 @@ volatile boolean humidityGood = 0;
 // Which pin for door/window sensor input
 #define DOORSENSORPIN 14
 
+unsigned long lastDoorTime = 0;  // timestamp of last door update
+uint32_t doorForceFreq = 900000; // force door refresh this often
+
 
 // Future: PIR will just use a regular data pin
 #define PIRPIN undef
@@ -154,8 +193,12 @@ volatile boolean humidityGood = 0;
 // as to not be optimized out by the compiler
 volatile unsigned long pulses = 0;
 
-volatile unsigned long lastFlow = 0; // timestamp of last flow update
-uint32_t flowFreq = 5000;       // send flow updates no more than x ms.
+unsigned long lastFlowTime = 0; // timestamp of last flow update
+unsigned long lastFlowVal = 0;  // value of last flow update
+
+uint32_t flowFreq = 2500;        // when water is flowing, update this often - 2.5s
+uint32_t flowForceFreq = 900000; // when water isn't flowing, update this often - 15min
+
 
 
 
@@ -164,10 +207,10 @@ uint32_t flowFreq = 5000;       // send flow updates no more than x ms.
 #include "Adafruit_VEML7700.h"
 
 Adafruit_VEML7700 veml = Adafruit_VEML7700();
-volatile boolean luxPresent = 0;   // sensor initialized ok
-volatile boolean luxGood = 0;
+volatile boolean luxPresent = 0;   // hardware is present?
+volatile boolean luxGood = 0;      // value read is good?
 volatile float lux = 0.0;
-uint32_t delayLuminance = 1000;
+uint32_t delayLuminance = 1000;    // read value every second
 
 
 // we need separate doorChangeTo and doorChanged so that we don't
@@ -198,14 +241,6 @@ unsigned long lastSerial = 0;
 // TODO: sanity check for millis() rolling over
 unsigned long lastTempHumidity = 30000;
 unsigned long lastLuminance = 30000;
-
-
-
-
-// read MAC address once and save it.  12 hex chars
-char macaddr[15] = "";
-
-char buff64[64] = "";  // general use global -- TODO: remove me
 
 
 
@@ -362,14 +397,16 @@ void webStat(AsyncWebServerRequest *request) {
 	// pass it through "as is" if parameters weren't read correctly.
 	
 	char buff[64] = "Usage: /stat?PARAMETER\n";
+	char param[64];
+	
 	// TODO: other sanity checks.
 	if (request->params() == 1  &&
 			request->getParam(0)->name().length() <= 32 &&
 			request->getParam(0)->value().length() == 0) {
 		// already checked len <= 32 so we can be less paranoid here
 		
-		// Read and save incoming name one time (buff64 is global)
-		sprintf(buff64, request->getParam(0)->name().c_str());
+		// Read and save incoming name prior to processing
+		sprintf(param, request->getParam(0)->name().c_str());
 		
 		// Copy chars over to buff to create literally:
 		//   PARAM => %PARAM%
@@ -380,7 +417,7 @@ void webStat(AsyncWebServerRequest *request) {
 		buff[0] = '%';
 		
 		// so rudimentary, but avoid char encoding quirks
-		while ((c = buff64[i++]) != '\0' && i <= 32)
+		while ((c = param[i++]) != '\0' && i <= 32)
 			if (c >= 'A' && c <= 'Z') 
 				buff[j++] = c;
 			else if (c >= 'a' && c <= 'z')
@@ -426,14 +463,13 @@ void mqttSendDoor() {
 	
 	sprintf(msg, "%s", doorState ? "ON" : "OFF");
 	
-	sprintf(buff, "esp8266-%s", macaddr);
-	if (mqttclient.connect(buff, mqttuser, mqttpass)) {
-		// reuse buffer
+	if (mqttclient.connect(mqttIdent, mqttuser, mqttpass)) {
 		sprintf(buff, "ha/binary_sensor/%s/door/state", macaddr);
 		Serial.print("sending ... ");
 		if (mqttclient.publish(buff, msg, true)) {
 			Serial.print(msg);
 			Serial.println(" sent.");
+			lastDoorTime = millis();
 		}
 		else { Serial.println("failed to send."); }
 	}
@@ -452,17 +488,22 @@ void mqttSendFlow() {
 	
 	Serial.print("MQTT Connecting for Flow ... ");
 	
+	// updated via interrupt; save it before we use it
+	unsigned long saveP = pulses;
+	
 	char buff[64];
 	char msg[32];
-	sprintf(buff, "esp8266-%s", macaddr);
-	sprintf(msg, "%i", pulses);
-	if (mqttclient.connect(buff, mqttuser, mqttpass)) {
-		// reuse buffer
+	sprintf(msg, "%i", saveP);
+	if (mqttclient.connect(mqttIdent, mqttuser, mqttpass)) {
 		sprintf(buff, "ha/sensor/%s/waterflow/state", macaddr);
 		Serial.print("sending ... ");
 		if (mqttclient.publish(buff, msg, true)) {
 			Serial.print(msg);
 			Serial.println(" sent.");
+			
+			lastFlowVal = saveP;
+			lastFlowTime = millis();
+			
 		}
 		else { Serial.println("failed to send."); }
 	}
@@ -482,8 +523,7 @@ void mqttSendEnviron() {
 	char buff[64];
 	char msg[32];
 	
-	sprintf(buff, "esp8266-%s", macaddr);
-	if (! mqttclient.connect(buff, mqttuser, mqttpass)) {
+	if (! mqttclient.connect(mqttIdent, mqttuser, mqttpass)) {
 		Serial.println("failed.");
 	}
 	else {
@@ -553,11 +593,12 @@ void setup() {
 	dht.temperature().getEvent(&event);
 	if (isnan(event.temperature)) {
 		Serial.println("Reading from temperature sensor failed; disabling.");
-		dhtPresent = 0;  // disable future checks
 	}
 	else {
-		// throw away the result; we'll read it again in loop()
-
+		// Note - we throw away the first temperature reading
+		
+		dhtPresent = 1;  // enable future checks
+		
 		// NOTE the F() macro pushes these strings into flash, not ram to save
 		// working space.  See https://www.arduino.cc/reference/en/language/variables/utilities/progmem/
 		//
@@ -734,9 +775,10 @@ void setup() {
 	Serial.println(WiFi.localIP());
 
 	// Read and save mac address one time since it won't change
-	sprintf(buff64, WiFi.macAddress().c_str());
+	char longmac[32];  // will contain colons, etc.
+	sprintf(longmac, WiFi.macAddress().c_str());
 	int i = 0; int j = 0; char c;
-	while ((c = buff64[i++]) != '\0' && j <= 12)
+	while ((c = longmac[i++]) != '\0' && j <= 12)
 		if (isalnum(c)) 
 			macaddr[j++] = c;
 	macaddr[j] = '\0';
@@ -744,6 +786,11 @@ void setup() {
 	
 	Serial.print("MAC address: ");
 	Serial.println(macaddr);
+	
+	sprintf(mqttIdent, "esp8266-%s", macaddr);
+	Serial.print("MQTT Client Ident: ");
+	Serial.println(mqttIdent);
+	Serial.println("");
 
 	// Connect to MQTT for initial updates 
 	Serial.println("Connecting to MQTT server for initial updates: ");
@@ -779,7 +826,7 @@ void loop()
 			doorChanged = 0;
 			
 			// something changed - so send stats updates
-			sendStatsNow = 1;
+			mqttSendDoor();
 			
 		}
 	
@@ -797,9 +844,14 @@ void loop()
 			doorState=doorCheck;
 			
 			// stats updates needed
-			sendStatsNow = 1;
+			mqttSendDoor();
 			
 		}
+	}
+	
+	// else, send door update regardless on this cadence
+	if (millis() - lastDoorTime > doorForceFreq) {
+		mqttSendDoor();
 	}
 	
 		
@@ -870,7 +922,14 @@ void loop()
 	}
 	
 	
-	
+	// send pulses if they've changed + it's been long enough since last update
+	if (pulses != lastFlowVal && millis() - lastFlowTime > flowFreq) {
+		mqttSendFlow();
+	}
+	// else, send update regardless on this cadence
+	else if (millis() - lastFlowTime > flowForceFreq) {
+		mqttSendFlow();
+	}
 	
 	
 	// TODO: deprecate serial output.
@@ -881,6 +940,7 @@ void loop()
 	//
 	// TODO: separate flags to update stats for different measurements
 	// -- just because door opened doesn't mean we should push a temp update
+	// -- ^ this is done; now need to split out temp/humid/lux to separate updates
 	//
 	if (sendStatsNow || millis() - lastSerial > statusFreq) {
 		Serial.println("");
@@ -894,10 +954,7 @@ void loop()
 		lastSerial=millis();
 		sendStatsNow = 0;
 		
-		// These will log their values to Serial, so no need to 
-		// print them specifically.
-		mqttSendDoor();
-		mqttSendFlow();
+		
 		mqttSendEnviron();
 		
 	}
