@@ -938,7 +938,7 @@ void loop()
 	// send pulses if they've changed + it's been long enough since last update
 	if (pulses != lastFlowVal && millis() - lastFlowTime > flowFreq) {
 		Serial.println("Water is flowing - sending data update");
-		logFlowing = 3;   // reset the counter for logging after flow stops
+		logFlowing = 2;   // reset the counter for logging after flow stops
 		mqttSendFlow();
 	}
 	else if (logFlowing > 0 && pulses == lastFlowVal && millis() - lastFlowTime > flowEndFreq) {

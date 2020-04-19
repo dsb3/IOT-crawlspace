@@ -107,6 +107,7 @@ We create two sensors - one for the MQTT data feed itself.  The other interprets
 - platform: mqtt
   name: mqtt_water_pulse
   unit_of_measurement: "pulses"
+  force_update: true
   state_topic: "ha/sensor/BCDDC2aabbcc/waterflow/state"
 
 - platform: template
@@ -118,4 +119,7 @@ We create two sensors - one for the MQTT data feed itself.  The other interprets
 
 ...
 ```
+
+In this example, our binary_sensor to detect water flowing must monitor the mqtt_water_pulse sensor, NOT mqtt_water_liter.  The MQTT sensor easily accepts a "force_update: true" to refresh the sensor with the same value, as happens when water stops flowing.
+
 
