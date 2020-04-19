@@ -193,8 +193,19 @@ unsigned long lastFlowTime = 0; // timestamp of last flow update
 unsigned long lastFlowVal = 0;  // value of last flow update
 
 uint32_t flowFreq = 2500;        // when water is flowing, update this often - 2.5s
+uint32_t flowEndFreq = 5000;     // when water stops flowing, update this often - 5.0s
 uint32_t flowForceFreq = 900000; // when water isn't flowing, update this often - 15min
 
+// logFlowing is curious.  We set this to something like 2 or 3 inside
+// loop() whenever we log flow data that changed.  Now, if flow data has
+// NOT changed, and this is non-zero, we decrement the counter and send a
+// log (of the unchanged flow data) anyway on the slower flowEndFreq timeline.
+//
+// The result of this is that for "x" seconds after water stops flowing, we
+// send duplicate "no change" data, which allows the monitor to detect that
+// it actually stopped, versus didn't get an update yet.
+//
+int logFlowing = 0;
 
 
 
@@ -211,7 +222,7 @@ uint32_t delayLuminance = 1000;    // read value every second
 
 // Update environmental stats this many ms, unless prompted to update sooner
 uint32_t envFreq = 2500;          // when environmentals are changing, send this often
-uint32_t envForceFreq = 60000;    // force an update this often, even if not changing
+uint32_t envForceFreq = 300000;   // force an update this often, even if not changing
 
 unsigned long lastEnvTime = 0;    // timestamp of last env update
 int sendEnvNow = 0;               // env stats changed, and should be sent asap
@@ -700,7 +711,7 @@ void setup() {
 		request->send_P(200, "text/json", config_json, processor);
 	});
 
-
+	// TODO: can we read the contents of serial output and offer it over http?
 
 
 	//// Examples with SPIFFS to read a data file from flash, with/without processing
@@ -921,12 +932,25 @@ void loop()
 	}
 	
 	
+	
+	
+	
 	// send pulses if they've changed + it's been long enough since last update
 	if (pulses != lastFlowVal && millis() - lastFlowTime > flowFreq) {
+		Serial.println("Water is flowing - sending data update");
+		logFlowing = 3;   // reset the counter for logging after flow stops
+		mqttSendFlow();
+	}
+	else if (logFlowing > 0 && pulses == lastFlowVal && millis() - lastFlowTime > flowEndFreq) {
+		Serial.print("Water is not flowing - logFlowing is ");
+		Serial.print(logFlowing);
+		Serial.println(" - sending data update anyway");
+		logFlowing--;
 		mqttSendFlow();
 	}
 	// else, send update regardless on this cadence
 	else if (millis() - lastFlowTime > flowForceFreq) {
+		Serial.println("Sending a forced water data update regardless of change");
 		mqttSendFlow();
 	}
 	
