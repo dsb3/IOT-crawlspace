@@ -57,82 +57,21 @@ h1 {
     <span class="sensor-labels">Door:</span>
     <span id="door">%DOOR%</span>
   </p>
+    <p>
+    <span class="sensor-labels">Door Two:</span>
+    <span id="door">%DOORTWO%</span>
+  </p>
+    <p>
+    <span class="sensor-labels">Motion:</span>
+    <span id="door">%MOTION%</span>
+  </p>
   <p>
-    <span class="sensor-labels">uptime: </span>
+    <span class="sensor-labels">Uptime: </span>
     <span id="uptime">%UPTIME%</span>
   </p>
 </body>
 
-<!-- script will poll and reload values every 10s -->
-<script>
-  setInterval(function ( ) {
-    var xhttp = new XMLHttpRequest();
-    xhttp.onreadystatechange = function() {
-      if (this.readyState == 4 && this.status == 200) {
-        document.getElementById("waterflow").innerHTML = this.responseText;
-      }
-    };
-    xhttp.open("GET", "/stat?WATERFLOW", true);
-    xhttp.send();
-  }, 10000 ) ;
 
-  setInterval(function ( ) {
-    var xhttp = new XMLHttpRequest();
-    xhttp.onreadystatechange = function() {
-      if (this.readyState == 4) {
-        document.getElementById("temperature").innerHTML = (this.status == 200 ? this.responseText : "-");
-      }
-    };
-    xhttp.open("GET", "/stat?TEMPERATURE", true);
-    xhttp.send();
-  }, 10000 ) ;
-
-  setInterval(function ( ) {
-    var xhttp = new XMLHttpRequest();
-    xhttp.onreadystatechange = function() {
-      if (this.readyState == 4) {
-        document.getElementById("humidity").innerHTML = (this.status == 200 ? this.responseText : "-");
-      }
-    };
-    xhttp.open("GET", "/stat?HUMIDITY", true);
-    xhttp.send();
-  }, 10000 ) ;
-
-  setInterval(function ( ) {
-    var xhttp = new XMLHttpRequest();
-    xhttp.onreadystatechange = function() {
-      if (this.readyState == 4) {
-        document.getElementById("luminance").innerHTML = (this.status == 200 ? this.responseText : "-");
-      }
-    };
-    xhttp.open("GET", "/stat?LUMINANCE", true);
-    xhttp.send();
-  }, 10000 ) ;
-
-  setInterval(function ( ) {
-    var xhttp = new XMLHttpRequest();
-    xhttp.onreadystatechange = function() {
-      if (this.readyState == 4 && this.status == 200) {
-        document.getElementById("door").innerHTML = this.responseText;
-      }
-    };
-    xhttp.open("GET", "/stat?DOOR", true);
-    xhttp.send();
-  }, 10000 ) ;
-
-  setInterval(function ( ) {
-    var xhttp = new XMLHttpRequest();
-    xhttp.onreadystatechange = function() {
-      if (this.readyState == 4 && this.status == 200) {
-        document.getElementById("uptime").innerHTML = this.responseText;
-      }
-    };
-    xhttp.open("GET", "/stat?UPTIME", true);
-    xhttp.send();
-  }, 10000 ) ;
-
-
-</script>
 </html>
 
 )";
