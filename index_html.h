@@ -58,8 +58,8 @@ h1 {
     <span id="door">%DOOR%</span>
   </p>
     <p>
-    <span class="sensor-labels">Door Two:</span>
-    <span id="door">%DOORTWO%</span>
+    <span class="sensor-labels">GPIO 1:</span>
+    <span id="door">%GPIO1%</span>
   </p>
     <p>
     <span class="sensor-labels">Motion:</span>
