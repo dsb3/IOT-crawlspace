@@ -770,6 +770,7 @@ void setup() {
 
 
 	Serial.println("Connecting to wifi ....");
+	WiFi.mode(WIFI_STA);
 	WiFi.begin(ssid, password);
 	Serial.println("");
 
