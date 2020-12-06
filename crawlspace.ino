@@ -524,6 +524,10 @@ void mqttSendFlow() {
 
 // Generic function to send all environment values
 // - temp, humidity, lux
+// - IP Address (todo : this was hacked in here as a quick
+//   fix and should be done separately, like once an hour.  Also
+//   test to make sure changes in IP, dhcp renewals, etc, are 
+//   picked up properly.
 //
 void mqttSendEnviron() {
 
@@ -576,6 +580,19 @@ void mqttSendEnviron() {
 			}
 			else { Serial.println("failed to send."); }
 		}
+
+
+		sprintf(msg, "%d.%d.%d.%d", WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3] );
+		sprintf(buff, "ha/sensor/%s/ipaddr/state", macaddr);
+		Serial.print("Sending IP address ... ");
+			
+		if (mqttclient.publish(buff, msg, true)) {
+			Serial.print(msg);
+			Serial.println(" successfully sent.");
+		}
+		else { Serial.println("failed to send."); }
+		
+
 		
 	}
 	
@@ -807,6 +824,9 @@ void setup() {
 	Serial.println("Connecting to MQTT server for initial updates: ");
 	mqttSendDoor();
 	mqttSendFlow();
+	
+	// Temporary -- send Environ to include IP address at boot
+	mqttSendEnviron();
 
 }
 
